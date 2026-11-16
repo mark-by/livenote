@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.log
+.DS_Store
+.omo
+.codegraph
+bin/
+src/web/public/drawio/
+src/web/public/drawio.staging-*/
+src/web/public/drawio.backup-*/
+.zed

@@ -1,0 +1,1568 @@
+/* ==========================================================================
+   LiveNote — светлая тема веб-интерфейса.
+   Токены: цвета, тени, радиусы, отступы. Без тёмной темы.
+   ========================================================================== */
+
+:root {
+  /* Цвета интерфейса */
+  --bg-app: #f4f5f7;
+  --bg-panel: #ffffff;
+  --bg-hover: #f0f1f4;
+  --bg-active: #e8eaf0;
+
+  --border: #e2e4e9;
+  --border-strong: #d3d6dd;
+
+  --text-primary: #1f2328;
+  --text-secondary: #59606b;
+  --text-muted: #8b909a;
+
+  --accent: #3d6bd6;
+  --accent-hover: #3158b9;
+  --accent-contrast: #ffffff;
+
+  --danger: #d33c3c;
+  --danger-bg: #fbecec;
+  --warning-bg: #fdf3d7;
+  --warning-border: #f0dfa8;
+  --warning-text: #7a5c12;
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 1px 3px rgba(16, 24, 40, 0.08), 0 4px 12px rgba(16, 24, 40, 0.06);
+
+  /* Геометрия */
+  --sidebar-width: 260px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* Типографика */
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 17px;
+  --fs-xl: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  color: var(--text-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: none;
+  border-radius: var(--radius-sm);
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --------------------------------------------------------------------------
+   Каркас приложения
+   -------------------------------------------------------------------------- */
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-main {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.app-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+/* --------------------------------------------------------------------------
+   Верхняя панель: toolbar + вкладки
+   -------------------------------------------------------------------------- */
+
+.topbar {
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Компактная квадратная кнопка с иконкой (toggle сайдбара и подобные). */
+.btn--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+}
+
+.btn--icon[aria-pressed='true'] {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+/* Селекты в модалке настроек — общий класс с тулбарными для одинакового вида. */
+.toolbar__select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  padding: 4px 6px;
+}
+
+.toolbar__select:hover {
+  border-color: var(--text-secondary);
+}
+
+.toolbar__title {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-right: auto;
+}
+
+.tabs-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px var(--space-3) 0;
+  overflow-x: auto;
+  background: var(--bg-app);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 220px;
+  padding: 7px var(--space-3);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+}
+
+.tab--active {
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border-color: var(--border);
+}
+
+.tab__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: var(--fs-md);
+  line-height: 1;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.tab__close:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+/* --------------------------------------------------------------------------
+   Кнопки
+   -------------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:hover {
+  background: var(--bg-hover);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.btn--primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn--danger {
+  color: var(--danger);
+}
+
+.btn--danger:hover {
+  background: #fbecec;
+}
+
+/* Большая кнопка «Добавить блок» в конце страницы */
+.btn--add-block {
+  width: 100%;
+  justify-content: center;
+  padding: var(--space-3);
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn--add-block:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* --------------------------------------------------------------------------
+   Sidebar
+   -------------------------------------------------------------------------- */
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar__header {
+  padding: var(--space-4);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.sidebar__list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar__item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  border-radius: var(--radius-sm);
+}
+
+.sidebar__item:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar__item--active {
+  background: var(--bg-active);
+  font-weight: 600;
+}
+
+/* Кнопка-строка: открывает страницу и занимает всю свободную ширину. */
+.sidebar__item__open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  padding: 6px 8px;
+  font-size: var(--fs-md);
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+}
+
+.sidebar__item__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Кнопка удаления страницы: появляется при hover на строке (как .mermaid-expand). */
+.sidebar__item__delete {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.sidebar__item:hover .sidebar__item__delete,
+.sidebar__item__delete:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar__item__delete:hover {
+  background: var(--danger-bg);
+}
+
+@media (hover: none) {
+  /* На тач-экранах кнопка удаления видна всегда. */
+  .sidebar__item__delete {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.sidebar__empty {
+  padding: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+/* --------------------------------------------------------------------------
+   Страница
+   -------------------------------------------------------------------------- */
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5) var(--space-6);
+}
+
+/* Варианты ширины страницы: select в настройках меняет data-page-width на корне. */
+.app[data-page-width='wide'] .page {
+  max-width: 1280px;
+}
+
+.app[data-page-width='full'] .page {
+  max-width: none;
+}
+
+.page__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.page__title {
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  margin: 0;
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  margin-left: -4px;
+}
+
+.page__title--editable {
+  cursor: text;
+}
+
+.page__title--editable:hover {
+  background: var(--bg-hover);
+}
+
+.page__title-input {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: var(--fs-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  padding: 2px 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.page__revision {
+  margin-top: var(--space-1);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.page__blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* --------------------------------------------------------------------------
+   Блоки (карточки)
+   -------------------------------------------------------------------------- */
+
+.block {
+  position: relative;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-1);
+  padding: var(--space-4) var(--space-5);
+}
+
+/* Подсветка блока, к которому «следует» за изменением агента. */
+.block--flash {
+  animation: block-flash 1.6s ease;
+}
+
+@keyframes block-flash {
+  0% {
+    background: var(--bg-active);
+  }
+  100% {
+    background: var(--bg-panel);
+  }
+}
+
+.block--stale {
+  border-color: var(--warning-border);
+}
+
+/* Действия появляются при наведении на карточку */
+.block__actions {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  z-index: 5;
+}
+
+.block:hover .block__actions,
+.block__actions:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  /* На тач-экранах действия видны всегда */
+  .block__actions {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+.block-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: var(--fs-xs);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.block-action:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.block-action--danger:hover {
+  background: #fbecec;
+  color: var(--danger);
+}
+
+.block__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-3);
+  padding: 4px 10px;
+  font-size: var(--fs-xs);
+  color: var(--warning-text);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+}
+
+/* Редактор блока */
+.block-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.block-editor__textarea {
+  width: 100%;
+  min-height: 160px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  resize: vertical;
+}
+
+.block-editor__bar {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.block-editor__hint {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.block-editor__error {
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
+
+/* Черновик нового (ещё не созданного) блока */
+.block--draft {
+  border-style: dashed;
+}
+
+.block__add {
+  display: flex;
+  justify-content: center;
+}
+
+.block__add-menu {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* --------------------------------------------------------------------------
+   Markdown
+   -------------------------------------------------------------------------- */
+
+.markdown-body {
+  font-size: var(--fs-md);
+  line-height: 1.65;
+  word-wrap: break-word;
+  /* Широкие таблицы и длинные строки не вылезают за страницу — появляется горизонтальный скролл. */
+  overflow-x: auto;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  font-weight: 700;
+  line-height: 1.3;
+  margin: var(--space-5) 0 var(--space-2);
+  letter-spacing: -0.01em;
+}
+
+.markdown-body h1 {
+  font-size: 1.6em;
+}
+
+.markdown-body h2 {
+  font-size: 1.35em;
+}
+
+.markdown-body h3 {
+  font-size: 1.15em;
+}
+
+.markdown-body p {
+  margin: var(--space-2) 0;
+}
+
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+
+.markdown-body li {
+  margin: 2px 0;
+}
+
+.markdown-body blockquote {
+  margin: var(--space-3) 0;
+  padding: 2px var(--space-4);
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.markdown-body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-hover);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.markdown-body pre {
+  background: #1f2430;
+  color: #e6e6e6;
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  overflow-x: auto;
+  margin: var(--space-3) 0;
+}
+
+.markdown-body pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: var(--space-3) 0;
+  width: 100%;
+  font-size: var(--fs-sm);
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  text-align: left;
+}
+
+.markdown-body th {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   Mermaid
+   -------------------------------------------------------------------------- */
+
+/* Название диаграммы (title из write_diagram) — HTML-заголовок над схемой, вне SVG.
+   Стиль H1: слева, крупно; для markdown-блоков не рендерится. */
+.diagram-title {
+  margin: 0 0 var(--space-2);
+  font-size: 1.6em;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text-primary);
+}
+
+.mermaid-block {
+  position: relative;
+  overflow-x: auto;
+}
+
+/* Хост для mermaid.render: вне экрана, но с геометрией (display:none ломает измерение размеров). */
+.mermaid-render-host {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 800px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+/* Действия у Mermaid-блока (во весь экран, скачать SVG): правый верхний угол,
+   появляются при hover — тот же паттерн, что у BPMN-контролов. */
+.mermaid-actions {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 6;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.mermaid-block:hover .mermaid-actions,
+.mermaid-actions:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  /* На тач-экранах действия видны всегда. */
+  .mermaid-actions {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+/* Кнопки «Во весь экран», «Скачать SVG» и «Копировать». */
+.mermaid-expand,
+.mermaid-download,
+.mermaid-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  padding: 2px 8px;
+  font-size: var(--fs-md);
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.mermaid-expand:hover,
+.mermaid-download:hover,
+.mermaid-copy:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+/* Скачивание неактивно, пока диаграмма не отрисована. */
+.mermaid-download:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mermaid-error {
+  font-size: var(--fs-sm);
+  color: var(--danger);
+  margin-top: var(--space-2);
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+/* --------------------------------------------------------------------------
+   BPMN (bpmn-js NavigatedViewer)
+   -------------------------------------------------------------------------- */
+
+/* Карточка BPMN-блока: горизонтальный скролл при широкой схеме. */
+.bpmn-block {
+  overflow-x: auto;
+}
+
+/* Контейнер, куда bpmn-js вкладывает свой холст: обязательная высота, лёгкий фон. */
+.bpmn-view-host {
+  position: relative;
+  width: 100%;
+  height: 420px;
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #f7f8fa;
+  overflow: hidden;
+}
+
+/* Холст bpmn-js занимает весь контейнер. */
+.bpmn-view-host .djs-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Кнопки управления масштабом: правый верхний угол, появляются при наведении. */
+.bpmn-controls {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 6;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  padding: 2px;
+}
+
+.bpmn-block:hover .bpmn-controls,
+.bpmn-controls:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  /* На тач-экранах кнопки видны всегда. */
+  .bpmn-controls {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+.bpmn-controls__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  padding: 2px 8px;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.bpmn-controls__btn:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+/* Предупреждение при ошибке импорта новой версии: показываем и текст ошибки,
+   и явно сообщаем, что на экране осталась предыдущая версия. */
+.bpmn-error {
+  font-size: var(--fs-sm);
+  margin-top: var(--space-2);
+  white-space: pre-wrap;
+}
+
+.bpmn-error__title {
+  color: var(--warning-text);
+  font-weight: 600;
+}
+
+.bpmn-error__detail {
+  color: var(--danger);
+  font-family: var(--font-mono);
+}
+
+/* --------------------------------------------------------------------------
+   Модальное окно ввода токена
+   -------------------------------------------------------------------------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  background: var(--bg-panel);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  padding: var(--space-5);
+}
+
+.modal__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-lg);
+  font-weight: 700;
+}
+
+.modal__text {
+  margin: 0 0 var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.modal__input {
+  width: 100%;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-4);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* Строки модального окна настроек (шестерёнка в тулбаре). */
+.settings__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  font-size: var(--fs-sm);
+}
+
+.settings__row + .settings__row {
+  border-top: 1px solid var(--border);
+}
+
+.settings__row--check {
+  justify-content: flex-start;
+}
+
+/* --------------------------------------------------------------------------
+   Уведомление об ошибке
+   -------------------------------------------------------------------------- */
+
+.global-error {
+  position: fixed;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  max-width: 420px;
+  z-index: 200;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  background: #2b1b1b;
+  color: #ffe3e3;
+  border: 1px solid #5a2b2b;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-sm);
+}
+
+.global-error__text {
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.global-error__close {
+  flex: 0 0 auto;
+  color: inherit;
+  opacity: 0.7;
+  font-size: var(--fs-md);
+  padding: 0 2px;
+}
+
+.global-error__close:hover {
+  opacity: 1;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Полноэкранный просмотр диаграммы (модалка DiagramFullscreen)
+   -------------------------------------------------------------------------- */
+
+/* Фиксированный оверлей на весь экран: тёмная подложка, поверх контента страницы. */
+.diagram-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(16, 24, 40, 0.6);
+}
+
+/* Верхняя панель: заголовок + ошибка + кнопки управления. */
+.diagram-fullscreen__panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+}
+
+.diagram-fullscreen__heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.diagram-fullscreen__title {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Название схемы в шапке полноэкранного просмотра — после названия страницы. */
+.diagram-fullscreen__diagram-title {
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diagram-fullscreen__diagram-title::before {
+  content: '— ';
+}
+
+/* Метка типа схемы: Mermaid / BPMN. */
+.diagram-fullscreen__type {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  border-radius: var(--radius-sm);
+  padding: 1px 8px;
+}
+
+/* Строка с ошибкой рендера — диаграмма при этом не показывается. */
+.diagram-fullscreen__error {
+  flex: 1 1 100%;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diagram-fullscreen__controls {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* Кнопки панели — тот же вид, что .bpmn-controls__btn. */
+.diagram-fullscreen__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 26px;
+  padding: 2px 8px;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.diagram-fullscreen__btn:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.diagram-fullscreen__btn--close {
+  font-weight: 600;
+}
+
+/* Зум-пан область: занимает остаток экрана под панелью. */
+.diagram-fullscreen__body {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background: #f7f8fa; /* как холст bpmn-блока */
+  background-image: radial-gradient(circle, #e3e6ea 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Масштабом SVG управляет JS. will-change закрепляет растровый слой и размывает текст при увеличении. */
+.diagram-fullscreen__canvas {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  cursor: grab;
+  user-select: none;
+}
+
+.diagram-fullscreen__canvas--dragging {
+  cursor: grabbing;
+}
+
+/* Контейнер для вставленного SVG: не даём пережимать схему контейнером —
+   масштабом управляет сам зум. */
+.diagram-fullscreen__svg svg {
+  display: block;
+  max-width: none;
+}
+
+/* Контейнер bpmn-js viewer: заполняет всю зум-пан область. */
+.diagram-fullscreen__bpmn {
+  position: absolute;
+  inset: 0;
+}
+
+.diagram-fullscreen__bpmn .djs-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* --------------------------------------------------------------------------
+   draw.io: безопасный SVG-preview и отдельный полноэкранный редактор
+   -------------------------------------------------------------------------- */
+
+.drawio-block {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.drawio-preview {
+  position: relative;
+  min-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-app);
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.drawio-preview__viewport {
+  height: 420px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+}
+
+.drawio-preview__image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  object-fit: contain;
+  transform-origin: center;
+  user-select: none;
+}
+
+.drawio-preview__status,
+.drawio-fullscreen__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  padding: var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.drawio-controls {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  max-width: calc(100% - var(--space-4));
+  padding: 2px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.drawio-block:hover .drawio-controls,
+.drawio-preview:hover .drawio-controls,
+.drawio-controls:hover,
+.drawio-controls:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawio-controls__btn,
+.drawio-fullscreen__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  min-height: 28px;
+  padding: 2px var(--space-2);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.drawio-controls__btn:hover,
+.drawio-fullscreen__btn:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.drawio-controls__btn:disabled,
+.drawio-fullscreen__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.drawio-frame-host {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 1024px;
+  height: 768px;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.drawio-error {
+  margin-top: var(--space-2);
+  color: var(--danger);
+  font: var(--fs-sm) var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.drawio-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-panel);
+}
+
+.drawio-fullscreen__panel {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-2);
+}
+
+.drawio-fullscreen__heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.drawio-fullscreen__title,
+.drawio-fullscreen__diagram-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawio-fullscreen__title {
+  font-size: var(--fs-lg);
+  font-weight: 700;
+}
+
+.drawio-fullscreen__diagram-title {
+  color: var(--text-secondary);
+}
+
+.drawio-fullscreen__diagram-title::before {
+  content: '— ';
+}
+
+.drawio-fullscreen__type,
+.drawio-fullscreen__dirty {
+  flex: 0 0 auto;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.drawio-fullscreen__dirty {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.drawio-fullscreen__controls {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-app);
+}
+
+.drawio-fullscreen__btn--primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.drawio-fullscreen__btn--primary:hover {
+  background: var(--accent-hover);
+  color: var(--accent-contrast);
+}
+
+.drawio-fullscreen__error {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--danger);
+  font: var(--fs-sm) var(--font-mono);
+  white-space: pre-wrap;
+}
+
+.drawio-fullscreen__body {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-app);
+}
+
+.drawio-fullscreen__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg-panel);
+}
+
+.drawio-fullscreen__loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  min-height: 0;
+  background: var(--bg-app);
+}
+
+@media (hover: none) {
+  .drawio-controls {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .toolbar {
+    padding: var(--space-2);
+    overflow-x: auto;
+  }
+
+  .app-main {
+    position: relative;
+  }
+
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    max-width: calc(100vw - var(--space-6));
+    box-shadow: var(--shadow-2);
+  }
+
+  .app-content {
+    width: 100%;
+  }
+
+  .page {
+    padding: var(--space-4) var(--space-2);
+  }
+
+  .page__header-main {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .page__title {
+    overflow-wrap: anywhere;
+  }
+
+  .block {
+    padding: var(--space-3);
+  }
+
+  .block__actions,
+  .block__add-menu {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+
+  .drawio-preview,
+  .drawio-preview__status {
+    min-height: 280px;
+  }
+
+  .drawio-preview__viewport {
+    height: 360px;
+    padding: var(--space-2);
+  }
+
+  .drawio-fullscreen__panel {
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2);
+  }
+
+  .drawio-fullscreen__heading {
+    width: 100%;
+  }
+
+  .drawio-fullscreen__dirty {
+    display: none;
+  }
+
+  .drawio-fullscreen__controls {
+    width: 100%;
+    margin-left: 0;
+    overflow-x: auto;
+  }
+
+  .drawio-fullscreen__btn {
+    flex: 1 0 auto;
+    min-height: 36px;
+  }
+}

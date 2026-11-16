@@ -1,0 +1,174 @@
+.diagram-fullscreen__workspace {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.diagram-fullscreen__workspace .diagram-fullscreen__body {
+  min-width: 0;
+}
+
+.diagram-fullscreen__controls {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.diagram-fullscreen__heading {
+  max-width: 100%;
+}
+
+.diagram-fullscreen__btn {
+  min-height: 28px;
+}
+
+.diagram-fullscreen .diagram-fullscreen__type {
+  color: var(--text-secondary);
+}
+
+.diagram-fullscreen__btn:disabled,
+.flowchart-editor button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.diagram-fullscreen__btn--primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.diagram-fullscreen__btn--primary:hover {
+  background: var(--accent-hover);
+  color: var(--accent-contrast);
+}
+
+.diagram-fullscreen__canvas--editing .node,
+.diagram-fullscreen__canvas--editing .flowchart-link,
+.diagram-fullscreen__canvas--editing path.relation {
+  cursor: pointer;
+}
+
+.diagram-fullscreen__canvas--editing .flowchart-link,
+.diagram-fullscreen__canvas--editing path.relation {
+  pointer-events: stroke;
+}
+
+.diagram-fullscreen__canvas--editing .node:hover,
+.diagram-fullscreen__canvas--editing .flowchart-selected {
+  filter: drop-shadow(0 2px 3px var(--accent));
+}
+
+.flowchart-editor {
+  flex: 0 0 310px;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+  border-left: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.flowchart-editor h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-lg);
+}
+
+.flowchart-editor__hint {
+  margin: 0 0 var(--space-5);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.flowchart-editor fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  min-width: 0;
+  border: 0;
+}
+
+.flowchart-editor legend {
+  margin-bottom: var(--space-2);
+  font-weight: 600;
+}
+
+.flowchart-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--fs-sm);
+}
+
+.flowchart-editor input,
+.flowchart-editor select,
+.flowchart-editor textarea {
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  font: inherit;
+}
+
+.flowchart-editor select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.flowchart-editor__error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.flowchart-editor__error textarea {
+  min-height: 160px;
+  font-family: var(--font-mono);
+}
+
+.flowchart-editor textarea {
+  resize: vertical;
+}
+
+.diagram-fullscreen .modal-overlay {
+  z-index: 1100;
+}
+
+@media (max-width: 700px) {
+  .diagram-fullscreen__workspace {
+    flex-direction: column;
+  }
+
+  .flowchart-editor {
+    flex: 0 1 48%;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .diagram-fullscreen__workspace .diagram-fullscreen__body {
+    flex: 1 0 160px;
+  }
+
+  .diagram-fullscreen__controls {
+    margin-left: 0;
+    gap: var(--space-2);
+  }
+
+  .diagram-fullscreen__btn,
+  .flowchart-editor button,
+  .flowchart-editor input,
+  .flowchart-editor select {
+    min-height: 44px;
+  }
+}
+.diagram-fullscreen {
+  width: 100dvw;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+#root:has(.diagram-fullscreen) {
+  overflow: hidden;
+}
+
