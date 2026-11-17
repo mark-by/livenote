@@ -7,11 +7,19 @@ import type {
   ApiConfig,
   Block,
   LiveEvent,
+  CreatePageBody,
+  MoveVaultPageBody,
   PageFull,
   PageSummary,
+  PatchVaultMetadataBody,
   RenderConfirmation,
   UpdatePagePatch,
-  WriteBlockResult
+  VaultDocument,
+  VaultMoveResult,
+  VaultSearchHit,
+  VaultSnapshot,
+  WriteBlockResult,
+  WriteVaultDocumentBody
 } from '../shared/types';
 
 /** Ключ localStorage для bearer-токена. */
@@ -146,10 +154,11 @@ export async function getPage(pageId: string): Promise<PageFull> {
   return body.page;
 }
 
-/** POST /api/pages — создать страницу. */
-export async function createPage(title: string): Promise<PageFull> {
-  const body = await request<{ page: PageFull }>('/api/pages', { method: 'POST', body: { title } });
-  return body.page;
+/** POST /api/pages — создать страницу или документ vault. */
+export async function createPage(titleOrBody: string | CreatePageBody): Promise<PageFull> {
+  const body: CreatePageBody = typeof titleOrBody === 'string' ? { title: titleOrBody } : titleOrBody;
+  const response = await request<{ page: PageFull }>('/api/pages', { method: 'POST', body });
+  return response.page;
 }
 
 /** PATCH /api/pages/:id — переименовать / переупорядочить / удалить блоки. */
@@ -166,22 +175,29 @@ export async function updatePage(
 }
 
 /** DELETE /api/pages/:id — удалить страницу. */
-export async function deletePage(pageId: string, expectedRevision: number): Promise<void> {
+export async function deletePage(pageId: string, expectedRevision: number, expectedVersion?: string): Promise<void> {
   await request<unknown>(`/api/pages/${encodeURIComponent(pageId)}`, {
     method: 'DELETE',
-    body: { expectedRevision }
+    body: { expectedRevision, ...(expectedVersion === undefined ? {} : { expectedVersion }) }
   });
 }
 
 /** POST /api/pages/:id/blocks — создать блок. */
-export function createBlock(
+export async function createBlock(
   pageId: string,
   body: { type: Block['type']; source: string; expectedRevision: number; blockId?: string }
 ): Promise<WriteBlockResult> {
-  return request<WriteBlockResult>(`/api/pages/${encodeURIComponent(pageId)}/blocks`, {
-    method: 'POST',
-    body
-  });
+  const response = await request<{ page: PageFull; validation?: WriteBlockResult['validation'] }>(
+    `/api/pages/${encodeURIComponent(pageId)}/blocks`,
+    { method: 'POST', body }
+  );
+  const block = response.page.blocks.find((item) => item.id === body.blockId) ?? response.page.blocks.at(-1);
+  return {
+    pageId,
+    blockId: block?.id ?? body.blockId ?? '',
+    revision: response.page.revision,
+    validation: response.validation
+  };
 }
 
 /** PUT /api/pages/:id/blocks/:blockId — заменить содержимое блока. */
@@ -244,6 +260,82 @@ export async function downloadBlockPng(pageId: string, blockId: string, filename
   );
   const blob = await response.blob();
   downloadBlob(blob, filename);
+}
+
+// ---------------------------------------------------------------------------
+// Vault: точные документы, метаданные, навигация и поиск
+// ---------------------------------------------------------------------------
+
+export async function getVaultSnapshot(): Promise<VaultSnapshot> {
+  return request<VaultSnapshot>('/api/vault');
+}
+
+export async function getVaultDocument(pageId: string): Promise<VaultDocument> {
+  const response = await request<{ document: VaultDocument }>(
+    `/api/pages/${encodeURIComponent(pageId)}/document`
+  );
+  return response.document;
+}
+
+export async function putVaultDocument(
+  pageId: string,
+  body: WriteVaultDocumentBody
+): Promise<VaultDocument> {
+  const response = await request<{ document: VaultDocument }>(
+    `/api/pages/${encodeURIComponent(pageId)}/document`,
+    { method: 'PUT', body }
+  );
+  return response.document;
+}
+
+export async function patchVaultMetadata(
+  pageId: string,
+  body: PatchVaultMetadataBody
+): Promise<VaultDocument> {
+  const response = await request<{ document: VaultDocument }>(
+    `/api/pages/${encodeURIComponent(pageId)}/metadata`,
+    { method: 'PATCH', body }
+  );
+  return response.document;
+}
+
+export async function moveVaultPage(
+  pageId: string,
+  body: MoveVaultPageBody
+): Promise<VaultMoveResult> {
+  return request<VaultMoveResult>(
+    `/api/pages/${encodeURIComponent(pageId)}/move`,
+    { method: 'POST', body }
+  );
+}
+
+export async function createVaultFolder(path: string, expectedTreeVersion: string): Promise<VaultSnapshot> {
+  const response = await request<{ snapshot: VaultSnapshot }>('/api/vault/folders', {
+    method: 'POST', body: { path, expectedTreeVersion }
+  });
+  return response.snapshot;
+}
+
+export async function moveVaultFolder(from: string, path: string, expectedTreeVersion: string): Promise<VaultMoveResult> {
+  return request<VaultMoveResult>('/api/vault/folders/move', {
+    method: 'POST', body: { from, path, expectedTreeVersion }
+  });
+}
+
+export async function deleteVaultFolder(path: string, expectedTreeVersion: string, recursive: boolean): Promise<VaultSnapshot> {
+  const response = await request<{ snapshot: VaultSnapshot }>('/api/vault/folders', {
+    method: 'DELETE', body: { path, expectedTreeVersion, recursive }
+  });
+  return response.snapshot;
+}
+
+export async function searchVault(query: string, tag?: string): Promise<VaultSearchHit[]> {
+  const params = new URLSearchParams();
+  if (query.trim()) params.set('q', query);
+  if (tag) params.set('tag', tag);
+  const suffix = params.size > 0 ? `?${params.toString()}` : '';
+  const response = await request<{ hits: VaultSearchHit[] }>(`/api/search${suffix}`);
+  return response.hits;
 }
 
 // ---------------------------------------------------------------------------

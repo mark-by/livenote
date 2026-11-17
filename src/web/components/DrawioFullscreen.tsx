@@ -1,29 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
+import { Button } from '@heroui/react';
 import type { Block } from '../../shared/types';
 import { ApiError, downloadBlockPng, updateBlock } from '../api';
 import { diagramFilename, downloadDiagramSvg, downloadTextFile } from '../svgDownload';
 import { useConfirm } from './ConfirmDialog';
-import { useDrawioFrame } from './useDrawioFrame';
+import { useDrawioFrame, DRAWIO_MODAL_EVENT } from './useDrawioFrame';
+import type { DiagramCommit } from '../diagrams/types';
+import { useFullscreenFocus } from '../diagrams/useFullscreenFocus';
+import { DiagramAction } from '../diagrams/DiagramAction';
+import { Copy } from '@gravity-ui/icons';
 
 interface DrawioFullscreenProps {
   block: Block;
   pageTitle: string;
   pageRevision: number;
-  onSaved(source: string, revision: number): void;
+  onSaved?(source: string, revision: number): void;
   onClose(): void;
+  onCommit?: DiagramCommit;
+  initialEditing?: boolean;
+  persisted?: boolean;
 }
 
-export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onClose }: DrawioFullscreenProps): React.JSX.Element {
+export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onClose, onCommit, persisted = true }: DrawioFullscreenProps): React.JSX.Element {
   const [draft, setDraft] = useState(block.source);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
-  const cancelRef = useRef<HTMLButtonElement>(null);
-  const draftRef = useRef(draft);
   const dirtyRef = useRef(false);
+  const changedRef = useRef(false);
   const savingRef = useRef(saving);
-  const closeRef = useRef(() => undefined as void);
-  draftRef.current = draft;
   const dirty = draft !== block.source;
   dirtyRef.current = dirty;
   savingRef.current = saving;
@@ -34,6 +39,7 @@ export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onCl
     onAutosave: (xml) => {
       // autosave меняет только локальный черновик, никаких REST-записей и load.
       setDraft(xml);
+      changedRef.current = true;
       setSaveError(null);
     }
   });
@@ -46,17 +52,23 @@ export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onCl
     try {
       // resetEditor заставляет draw.io завершить текущее редактирование текста;
       // только следующий свежий export xml является источником для записи.
-      const source = await exportDiagram('xml', true);
+      const exported = await exportDiagram('xml', true);
+      const source = onCommit && !changedRef.current ? block.source : exported;
       if (!source.trim()) throw new Error('draw.io вернул пустой XML');
-      const result = await updateBlock(block.pageId, block.id, {
-        source, expectedRevision: pageRevision
-      });
-      if (result.validation?.syntax === 'error') {
-        setSaveError(result.validation.error?.message ?? 'Сервер отклонил XML draw.io.');
-        return;
+      if (onCommit) {
+        await onCommit(source);
+      } else {
+        const result = await updateBlock(block.pageId, block.id, {
+          source, expectedRevision: pageRevision
+        });
+        if (result.validation?.syntax === 'error') {
+          setSaveError(result.validation.error?.message ?? 'Сервер отклонил XML draw.io.');
+          return;
+        }
+        onSaved?.(source, result.revision);
       }
       setDraft(source);
-      onSaved(source, result.revision);
+      changedRef.current = false;
     } catch (saveFailure) {
       // При конфликте iframe и draft остаются нетронутыми.
       setSaveError(saveFailure instanceof ApiError && saveFailure.code === 'conflict'
@@ -81,7 +93,9 @@ export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onCl
     }
     onClose();
   };
-  closeRef.current = () => { void cancel(); };
+  const focus = useFullscreenFocus({
+    close: () => { void cancel(); }, suspended: dialog !== null, saving, save: () => { void save(); }
+  });
 
   const download = async (format: 'drawio' | 'svg' | 'png'): Promise<void> => {
     setSaveError(null);
@@ -102,48 +116,22 @@ export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onCl
   };
 
   useEffect(() => {
+    window.dispatchEvent(new CustomEvent(DRAWIO_MODAL_EVENT, { detail: { open: true } }));
+    return () => {
+      window.dispatchEvent(new CustomEvent(DRAWIO_MODAL_EVENT, { detail: { open: false } }));
+    };
+  }, []);
+
+  useEffect(() => {
     if (!dirty) return;
     const onBeforeUnload = (event: BeforeUnloadEvent): void => event.preventDefault();
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [dirty]);
 
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    const previousFocus = document.activeElement;
-    document.body.style.overflow = 'hidden';
-    cancelRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (dialog !== null) return;
-      if (event.key === 'Escape' && !event.defaultPrevented) closeRef.current();
-      if (event.key !== 'Tab') return;
-      const root = cancelRef.current?.closest('[role="dialog"]');
-      const controls = Array.from(root?.querySelectorAll<HTMLElement>(
-        'button:not(:disabled), iframe'
-      ) ?? []).filter((element) => element.getClientRects().length > 0);
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!root?.contains(document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener('keydown', onKeyDown);
-      if (previousFocus instanceof HTMLElement) previousFocus.focus();
-    };
-  }, [dialog]);
-
   return (
-    <div className="drawio-fullscreen" role="dialog" aria-modal="true" aria-label={`${pageTitle} — схема draw.io`}>
+    <div className="drawio-fullscreen" role="dialog" aria-modal="true" aria-label={`${pageTitle} — схема draw.io`}
+      onKeyDown={focus.onKeyDown}>
       <div className="drawio-fullscreen__panel">
         <div className="drawio-fullscreen__heading">
           <span className="drawio-fullscreen__title">{pageTitle}</span>
@@ -152,19 +140,24 @@ export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onCl
           {dirty && <span className="drawio-fullscreen__dirty">Есть несохранённые изменения</span>}
         </div>
         <div className="drawio-fullscreen__controls">
-          <button type="button" className="drawio-fullscreen__btn drawio-fullscreen__btn--primary"
-            disabled={saving || !ready || error !== null} onClick={() => { void save(); }}>
+          <Button variant="primary" className="drawio-fullscreen__btn drawio-fullscreen__btn--primary"
+            isDisabled={saving || !ready || error !== null} onPress={() => { void save(); }}>
             {saving ? 'Сохранение…' : 'Сохранить'}
-          </button>
-          <button ref={cancelRef} type="button" className="drawio-fullscreen__btn" disabled={saving}
-            onClick={() => { void cancel(); }}>Отмена</button>
-          <button type="button" className="drawio-fullscreen__btn" disabled={!ready || saving}
-            aria-label="Скачать draw.io XML" onClick={() => { void download('drawio'); }}>XML</button>
-          <button type="button" className="drawio-fullscreen__btn" disabled={!ready || saving}
-            aria-label="Скачать SVG" onClick={() => { void download('svg'); }}>SVG</button>
-          <button type="button" className="drawio-fullscreen__btn" disabled={dirty || saving}
-            aria-label="Скачать PNG" title={dirty ? 'Сначала сохраните изменения' : 'Скачать PNG'}
-            onClick={() => { void download('png'); }}>PNG</button>
+          </Button>
+          <Button ref={focus.closeRef} variant="ghost" className="drawio-fullscreen__btn" isDisabled={saving}
+            onPress={() => { void cancel(); }}>Отмена</Button>
+          <DiagramAction label="Копировать исходник" icon={Copy} className="drawio-fullscreen__btn"
+            disabled={!ready || saving} onPress={() => {
+              void exportDiagram('xml', true).then((source) => navigator.clipboard.writeText(source))
+                .catch((failure: unknown) => setSaveError(failure instanceof Error ? failure.message : String(failure)));
+            }} />
+          <Button variant="ghost" className="drawio-fullscreen__btn" isDisabled={!ready || saving}
+            aria-label="Скачать draw.io XML" onPress={() => { void download('drawio'); }}>XML</Button>
+          <Button variant="ghost" className="drawio-fullscreen__btn" isDisabled={!ready || saving}
+            aria-label="Скачать SVG" onPress={() => { void download('svg'); }}>SVG</Button>
+          {persisted && <Button variant="ghost" className="drawio-fullscreen__btn" isDisabled={dirty || saving}
+            aria-label="Скачать PNG"
+            onPress={() => { void download('png'); }}>PNG</Button>}
         </div>
       </div>
       {(error ?? saveError) && <div className="drawio-fullscreen__error" role="alert">{error ?? saveError}</div>}

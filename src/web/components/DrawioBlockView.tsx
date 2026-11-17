@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
+import { Button } from '@heroui/react';
 import type { Block } from '../../shared/types';
 import { confirmRendered, downloadBlockPng } from '../api';
 import { diagramFilename, downloadDiagramSvg, downloadTextFile } from '../svgDownload';
 import { CopyButton } from './CopyButton';
 import { useDrawioFrame } from './useDrawioFrame';
+import { ArrowsExpand, MagnifierPlus, MagnifierMinus } from '@gravity-ui/icons';
+import { DiagramAction } from '../diagrams/DiagramAction';
 
 export const EMPTY_DRAWIO_XML =
   '<mxfile><diagram id="livenote" name="Страница 1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
@@ -13,47 +16,44 @@ interface DrawioBlockViewProps {
   pageRevision: number;
   pageTitle: string;
   onExpand(): void;
+  persisted?: boolean;
 }
 
-export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand }: DrawioBlockViewProps): React.JSX.Element {
+export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand, persisted = true }: DrawioBlockViewProps): React.JSX.Element {
   const svgRef = useRef('');
   const [svgUrl, setSvgUrl] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const [exportError, setExportError] = useState<string | null>(null);
   const { iframeRef, ready, error, exportDiagram } = useDrawioFrame({
     xml: block.source,
-    frameKey: `${block.id}:${block.source}`
+    frameKey: `${block.id}:${block.source}`,
+    backgroundPreview: true
   });
 
   useEffect(() => {
     if (!ready) return;
     let current = true;
-    let objectUrl: string | null = null;
     setScale(1);
     void exportDiagram('svg').then((svg) => {
       if (!current) return;
       if (!svg.includes('<svg')) throw new Error('draw.io не вернул SVG');
       svgRef.current = svg;
-      objectUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-      setSvgUrl((previous) => {
-        if (previous) URL.revokeObjectURL(previous);
-        return objectUrl;
-      });
+      const objectUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+      setSvgUrl(objectUrl);
       setExportError(null);
-      void confirmRendered(block.pageId, block.id, { revision: pageRevision, ok: true }).catch(() => undefined);
+      if (persisted) void confirmRendered(block.pageId, block.id, { revision: pageRevision, ok: true }).catch(() => undefined);
     }).catch((renderError: unknown) => {
       if (!current) return;
       const message = renderError instanceof Error ? renderError.message : String(renderError);
       setExportError(message);
-      void confirmRendered(block.pageId, block.id, {
+      if (persisted) void confirmRendered(block.pageId, block.id, {
         revision: pageRevision, ok: false, error: message
       }).catch(() => undefined);
     });
     return () => {
       current = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [ready, block.id, block.pageId, pageRevision]);
+  }, [ready, block.id, block.pageId, pageRevision, persisted]);
 
   useEffect(() => () => {
     if (svgUrl) URL.revokeObjectURL(svgUrl);
@@ -69,7 +69,7 @@ export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand }: Dr
 
   const failure = error ?? exportError;
   const showStaleBadge = block.renderOk === false && block.renderedRevision !== null &&
-    block.renderedRevision < pageRevision;
+    block.renderedRevision !== pageRevision;
 
   return (
     <div className="drawio-block">
@@ -92,19 +92,18 @@ export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand }: Dr
         )}
         <div className="drawio-controls" aria-label="Действия со схемой draw.io">
           <CopyButton text={block.source} title="Копировать исходник" className="drawio-controls__btn" />
-          <button type="button" className="drawio-controls__btn" onClick={onExpand}
-            title="Редактировать на весь экран" aria-label="Во весь экран">⛶</button>
-          <button type="button" className="drawio-controls__btn" aria-label="Приблизить draw.io-схему"
-            disabled={!svgUrl} onClick={() => setScale((value) => Math.min(4, value * 1.2))}>+</button>
-          <button type="button" className="drawio-controls__btn" aria-label="Отдалить draw.io-схему"
-            disabled={!svgUrl} onClick={() => setScale((value) => Math.max(0.2, value / 1.2))}>−</button>
-          <button type="button" className="drawio-controls__btn" aria-label="Сбросить масштаб draw.io-схемы"
-            disabled={!svgUrl} onClick={() => setScale(1)}>Сброс</button>
-          <button type="button" className="drawio-controls__btn" aria-label="Скачать draw.io XML"
-            onClick={() => downloadTextFile(block.source, diagramFilename(pageTitle, block.id, 'drawio'), 'application/xml')}>XML</button>
-          <button type="button" className="drawio-controls__btn" aria-label="Скачать SVG" disabled={!svgRef.current}
-            onClick={() => downloadDiagramSvg(svgRef.current, diagramFilename(pageTitle, block.id, 'svg'))}>SVG</button>
-          <button type="button" className="drawio-controls__btn" aria-label="Скачать PNG" onClick={downloadPng}>PNG</button>
+          <DiagramAction label="Во весь экран" icon={ArrowsExpand} className="drawio-controls__btn" onPress={onExpand} />
+          <DiagramAction label="Приблизить draw.io-схему" icon={MagnifierPlus} className="drawio-controls__btn"
+            disabled={!svgUrl} onPress={() => setScale((value) => Math.min(4, value * 1.2))} />
+          <DiagramAction label="Отдалить draw.io-схему" icon={MagnifierMinus} className="drawio-controls__btn"
+            disabled={!svgUrl} onPress={() => setScale((value) => Math.max(0.2, value / 1.2))} />
+          <DiagramAction label="Сбросить масштаб draw.io-схемы" icon={ArrowsExpand} className="drawio-controls__btn"
+            disabled={!svgUrl} onPress={() => setScale(1)} />
+          <Button variant="ghost" size="sm" className="drawio-controls__btn" aria-label="Скачать draw.io XML"
+            onPress={() => downloadTextFile(block.source, diagramFilename(pageTitle, block.id, 'drawio'), 'application/xml')}>XML</Button>
+          <Button variant="ghost" size="sm" className="drawio-controls__btn" aria-label="Скачать SVG" isDisabled={!svgRef.current}
+            onPress={() => downloadDiagramSvg(svgRef.current, diagramFilename(pageTitle, block.id, 'svg'))}>SVG</Button>
+          {persisted && <Button variant="ghost" size="sm" className="drawio-controls__btn" aria-label="Скачать PNG" onPress={downloadPng}>PNG</Button>}
         </div>
       </div>
       <iframe ref={iframeRef} className="drawio-frame-host" title="Локальный рендер draw.io"

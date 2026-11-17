@@ -2,6 +2,7 @@
  * Панель действий блока: Копировать / Редактировать / Вверх / Вниз / Удалить.
  * Появляется при наведении на карточку блока (см. styles.css).
  */
+import { Button } from '@heroui/react';
 import { CopyButton } from './CopyButton';
 
 interface BlockActionsProps {
@@ -27,30 +28,30 @@ export function BlockActions({
   return (
     <div className="block__actions" onClick={(event) => event.stopPropagation()}>
       <CopyButton text={copyText} title="Копировать" className="block-action" />
-      <button type="button" className="block-action" onClick={onEdit} title="Редактировать">
+      <Button variant="ghost" size="sm" className="block-action" onPress={onEdit}>
         Редактировать
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
         className="block-action"
-        onClick={onMoveUp}
-        disabled={!canMoveUp}
-        title="Переместить вверх"
+        onPress={onMoveUp}
+        isDisabled={!canMoveUp}
       >
         ↑ Вверх
-      </button>
-      <button
-        type="button"
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
         className="block-action"
-        onClick={onMoveDown}
-        disabled={!canMoveDown}
-        title="Переместить вниз"
+        onPress={onMoveDown}
+        isDisabled={!canMoveDown}
       >
         ↓ Вниз
-      </button>
-      <button type="button" className="block-action block-action--danger" onClick={onDelete} title="Удалить блок">
+      </Button>
+      <Button variant="danger-soft" size="sm" className="block-action block-action--danger" onPress={onDelete}>
         Удалить
-      </button>
+      </Button>
     </div>
   );
 }

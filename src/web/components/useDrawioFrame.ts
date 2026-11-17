@@ -1,19 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-
-export const DRAWIO_FRAME_URL =
-  '/drawio/index.html?embed=1&proto=json&offline=1&noSaveBtn=1&noExitBtn=1&saveAndExit=0&contrast=0';
+import { decodeExport, messageError, DRAWIO_FRAME_URL, DRAWIO_MODAL_EVENT } from '../diagrams/drawioProtocol';
+import type { DrawioMessage, ExportFormat } from '../diagrams/drawioProtocol';
+export { DRAWIO_FRAME_URL, DRAWIO_MODAL_EVENT } from '../diagrams/drawioProtocol';
 
 const FRAME_TIMEOUT_MS = 20_000;
-
-type ExportFormat = 'xml' | 'svg';
-type DrawioMessage = {
-  event?: string;
-  requestId?: string;
-  message?: { requestId?: string };
-  xml?: string;
-  data?: string;
-  error?: string;
-};
 
 interface PendingExport {
   format: ExportFormat;
@@ -27,35 +17,15 @@ interface DrawioFrameOptions {
   /** Изменение ключа пересоздаёт iframe. В редакторе ключ не зависит от autosave. */
   frameKey: string;
   onAutosave?(xml: string): void;
-}
-
-function messageError(message: string): Error {
-  return new Error(`Локальный редактор draw.io: ${message}`);
-}
-
-function decodeExport(message: DrawioMessage, format: ExportFormat): string {
-  if (format === 'xml' && typeof message.xml === 'string') return message.xml;
-  const data = message.data;
-  if (typeof data !== 'string' || data.length === 0) {
-    throw messageError(`пустой ответ экспорта ${format.toUpperCase()}`);
-  }
-  if (!data.startsWith('data:')) return data;
-  const comma = data.indexOf(',');
-  if (comma < 0) throw messageError('некорректный data URL');
-  const metadata = data.slice(0, comma);
-  const payload = data.slice(comma + 1);
-  if (metadata.endsWith(';base64')) {
-    const bytes = Uint8Array.from(atob(payload), (char) => char.charCodeAt(0));
-    return new TextDecoder().decode(bytes);
-  }
-  return decodeURIComponent(payload);
+  /** Фоновый preview не должен забирать фокус у открытого fullscreen-редактора. */
+  backgroundPreview?: boolean;
 }
 
 /**
  * Единственная точка общения с локальным draw.io. Listener устанавливается до src,
  * сообщения принимаются только от локального origin и точного contentWindow.
  */
-export function useDrawioFrame({ xml, frameKey, onAutosave }: DrawioFrameOptions) {
+export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = false }: DrawioFrameOptions) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const xmlRef = useRef(xml);
   const autosaveRef = useRef(onAutosave);
@@ -66,13 +36,47 @@ export function useDrawioFrame({ xml, frameKey, onAutosave }: DrawioFrameOptions
   const exportNowRef = useRef<((format: ExportFormat, resetEditor: boolean) => Promise<string>) | null>(null);
   const initializedRef = useRef(false);
   const [ready, setReady] = useState(false);
+  const readyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [previewEnabled, setPreviewEnabled] = useState(() =>
+    !backgroundPreview || document.querySelector('.drawio-fullscreen__frame') === null
+  );
+  const modalOpenRef = useRef(document.querySelector('.drawio-fullscreen__frame') !== null);
+  const requestedKeyRef = useRef(frameKey);
+  const [loadedFrameKey, setLoadedFrameKey] = useState(frameKey);
   xmlRef.current = xml;
+  readyRef.current = ready;
   autosaveRef.current = onAutosave;
+  requestedKeyRef.current = frameKey;
+
+  useEffect(() => {
+    if (!backgroundPreview) return;
+    const onModal = (event: Event): void => {
+      if (!(event instanceof CustomEvent) || typeof event.detail?.open !== 'boolean') return;
+      modalOpenRef.current = event.detail.open;
+      if (modalOpenRef.current && !readyRef.current) setPreviewEnabled(false);
+      if (!modalOpenRef.current) {
+        setLoadedFrameKey(requestedKeyRef.current);
+        setPreviewEnabled(true);
+      }
+    };
+    window.addEventListener(DRAWIO_MODAL_EVENT, onModal);
+    return () => window.removeEventListener(DRAWIO_MODAL_EVENT, onModal);
+  }, [backgroundPreview]);
+
+  useEffect(() => {
+    if (!backgroundPreview || !modalOpenRef.current) setLoadedFrameKey(frameKey);
+  }, [frameKey, backgroundPreview]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
     if (!iframe) return;
+    if (backgroundPreview && !previewEnabled) {
+      setReady(false);
+      return;
+    }
+    // Уже загруженный preview остаётся живым при открытии fullscreen.
+    iframe.inert = backgroundPreview;
     const generation = ++generationRef.current;
     const origin = window.location.origin;
     let disposed = false;
@@ -146,6 +150,10 @@ export function useDrawioFrame({ xml, frameKey, onAutosave }: DrawioFrameOptions
       } catch {
         return;
       }
+      if (message.event === 'configure' && backgroundPreview) {
+        post({ action: 'configure', config: { noAutoFocus: true } });
+        return;
+      }
       if (message.event === 'init') {
         initializedRef.current = true;
         // load и все последующие операции идут через одну очередь. Событие load
@@ -169,6 +177,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave }: DrawioFrameOptions
         return;
       }
       if (message.event === 'load') {
+        if (!backgroundPreview) post({ action: 'fit', maxScale: 1 });
         finishLoad?.();
         finishLoad = null;
         return;
@@ -222,7 +231,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave }: DrawioFrameOptions
     window.addEventListener('message', onMessage);
     iframe.addEventListener('load', onLoad);
     // Только теперь, после listener, разрешается навигация iframe.
-    iframe.src = DRAWIO_FRAME_URL;
+    iframe.src = backgroundPreview ? `${DRAWIO_FRAME_URL}&configure=1` : DRAWIO_FRAME_URL;
 
     return () => {
       disposed = true;
@@ -238,7 +247,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave }: DrawioFrameOptions
       // для следующего effect, но немедленно выгружаем старый документ.
       iframe.src = 'about:blank';
     };
-  }, [frameKey]);
+  }, [loadedFrameKey, backgroundPreview, previewEnabled]);
 
   const exportDiagram = (format: ExportFormat, resetEditor = false): Promise<string> => {
     const operation = queueRef.current.then(() => {
@@ -251,5 +260,5 @@ export function useDrawioFrame({ xml, frameKey, onAutosave }: DrawioFrameOptions
     return operation;
   };
 
-  return { iframeRef, ready, error, exportDiagram };
+  return { iframeRef, ready: ready && loadedFrameKey === frameKey, error, exportDiagram };
 }

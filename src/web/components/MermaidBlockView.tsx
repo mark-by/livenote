@@ -13,33 +13,16 @@
  * устаревшей версии не вставляется, если появилась более новая.
  */
 import { useEffect, useRef, useState } from 'react';
+import { Button } from '@heroui/react';
 import mermaid from 'mermaid';
 import type { Block } from '../../shared/types';
 import { confirmRendered, downloadBlockPng } from '../api';
 import { downloadDiagramSvg, staticSvgMarkup } from '../svgDownload';
 import { ensureMermaidInitialized, useThemeVersion } from '../mermaidInit';
 import { CopyButton } from './CopyButton';
-
-function DownloadIcon(): React.JSX.Element {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <path d="M7 10l5 5 5-5" />
-      <path d="M12 15V3" />
-    </svg>
-  );
-}
+import { ArrowDownToLine, ArrowsExpand } from '@gravity-ui/icons';
+import { DiagramAction } from '../diagrams/DiagramAction';
+import { downloadTextFile } from '../svgDownload';
 
 interface MermaidBlockViewProps {
   block: Block;
@@ -47,9 +30,10 @@ interface MermaidBlockViewProps {
   pageRevision: number;
   /** Открыть диаграмму в полноэкранном режиме (опционально). */
   onExpand?: () => void;
+  persisted?: boolean;
 }
 
-export function MermaidBlockView({ block, pageRevision, onExpand }: MermaidBlockViewProps): React.JSX.Element {
+export function MermaidBlockView({ block, pageRevision, onExpand, persisted = true }: MermaidBlockViewProps): React.JSX.Element {
   // Скрытый контейнер, куда mermaid.render вкладывает результат.
   const renderHostRef = useRef<HTMLDivElement>(null);
   // Видимый контейнер с актуальным SVG.
@@ -81,6 +65,7 @@ export function MermaidBlockView({ block, pageRevision, onExpand }: MermaidBlock
     const report = (rawError: unknown): void => {
       const message = rawError instanceof Error ? rawError.message : String(rawError);
       setError(message);
+      if (!persisted) return;
       void confirmRendered(block.pageId, block.id, { revision: pageRevision, ok: false, error: message }).catch(
         () => {
           // Ошибка подтверждения не критична: главное — не выставлять ok:true ложно.
@@ -140,7 +125,7 @@ export function MermaidBlockView({ block, pageRevision, onExpand }: MermaidBlock
       setError(null);
 
       // (г) Подтверждаем фактически отображённую ревизию.
-      void confirmRendered(block.pageId, block.id, { revision: pageRevision, ok: true }).catch(() => {
+      if (persisted) void confirmRendered(block.pageId, block.id, { revision: pageRevision, ok: true }).catch(() => {
         // Ошибка подтверждения не критична для отображения.
       });
     })();
@@ -149,11 +134,11 @@ export function MermaidBlockView({ block, pageRevision, onExpand }: MermaidBlock
       disposed = true;
     };
     // Рендерим заново при изменении исходника блока или темы mermaid.
-  }, [block.source, block.id, block.pageId, pageRevision, themeVersion]);
+  }, [block.source, block.id, block.pageId, pageRevision, themeVersion, persisted]);
 
   // Бейдж «предыдущая версия», если сервер знает, что последняя ревизия не отображалась.
   const showStaleBadge =
-    block.renderOk === false && block.renderedRevision !== null && block.renderedRevision < pageRevision;
+    block.renderOk === false && block.renderedRevision !== null && block.renderedRevision !== pageRevision;
 
   return (
     <div className="mermaid-block">
@@ -161,34 +146,19 @@ export function MermaidBlockView({ block, pageRevision, onExpand }: MermaidBlock
       {block.title !== null && block.title !== '' && <div className="diagram-title">{block.title}</div>}
       <div className="mermaid-actions">
         <CopyButton text={block.source} title="Копировать исходник" className="mermaid-copy" />
-        {onExpand && (
-          <button
-            type="button"
-            className="mermaid-expand"
-            onClick={onExpand}
-            title="Открыть на весь экран"
-            aria-label="Во весь экран"
-          >
-            ⛶
-          </button>
-        )}
-        <button
-          type="button"
-          className="mermaid-download"
-          onClick={(event) => {
-            // Не даём клику распространяться за пределы блока.
-            event.stopPropagation();
+        {onExpand && <DiagramAction label="Во весь экран" icon={ArrowsExpand} className="mermaid-expand" onPress={onExpand} />}
+        <DiagramAction label="Скачать SVG" icon={ArrowDownToLine} className="mermaid-download"
+          disabled={!svgReady} onPress={() => {
             const svg = svgRef.current;
             if (svg.length > 0) {
               downloadDiagramSvg(svg, `${block.id}.svg`);
             }
-          }}
-          disabled={!svgReady}
-          title="Скачать SVG (статичная картинка для досок)"
-          aria-label="Скачать SVG"
-        >
-          <DownloadIcon />
-        </button>
+          }} />
+        <Button variant="ghost" size="sm" aria-label="Скачать исходник Mermaid"
+          onPress={() => downloadTextFile(block.source, `${block.id}.mmd`, 'text/plain')}>Mermaid</Button>
+        {persisted && <Button variant="ghost" size="sm" aria-label="Скачать PNG"
+          onPress={() => { void downloadBlockPng(block.pageId, block.id, `${block.id}.png`)
+            .catch((failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure))); }}>PNG</Button>}
       </div>
       {/* Видимый контейнер с актуальным SVG */}
       <div ref={visibleRef} />

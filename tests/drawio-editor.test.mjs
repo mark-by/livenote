@@ -54,7 +54,7 @@ async function openEditor(page) {
   await expect(dialog.locator('.drawio-fullscreen__frame')).toBeVisible();
   const frame = dialog.locator('.drawio-fullscreen__frame');
   await expect(frame).toHaveAttribute('src',
-    '/drawio/index.html?embed=1&proto=json&offline=1&noSaveBtn=1&noExitBtn=1&saveAndExit=0&contrast=0');
+    '/drawio/index.html?embed=1&proto=json&offline=1&noSaveBtn=1&noExitBtn=1&saveAndExit=0&contrast=0&ui=simple&sidebar=0&format=0');
   await frame.contentFrame().locator('.geDiagramContainer').waitFor({ timeout: 45_000 });
   return { dialog, frame: frame.contentFrame() };
 }
@@ -179,6 +179,12 @@ test('Добавление draw.io создаёт пустую схему; deskt
   const bounds = await dialog.boundingBox();
   assert.equal(Math.round(bounds.width), 390);
   assert.equal(Math.round(bounds.height), 844);
+  const canvasAvailable = await dialog.locator('.drawio-fullscreen__frame').contentFrame()
+    .locator('.geDiagramContainer').evaluate((canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      return canvas.contains(canvas.ownerDocument.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+    });
+  assert.equal(canvasAvailable, true, 'Панели draw.io не перекрывают центр холста на узком экране.');
   await page.screenshot();
   await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
 });

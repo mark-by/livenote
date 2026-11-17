@@ -1,3 +1,4 @@
+// allow: SIZE_OK — плоская таблица REST-маршрутов сохраняет существующие envelopes, auth и единый NoteService.
 /**
  * REST API для веб-интерфейса. Монтируется в app.ts на /api:
  * bearer-авторизация и express.json уже применены выше по цепочке.
@@ -11,6 +12,7 @@ import { InvalidRequestError, NotFoundError } from './errors.js';
 import { parseMarkdownToBlocks } from './import.js';
 import type { ServerDeps } from './ports.js';
 import type { UpdatePageInput } from './services.js';
+import { createSchema, deleteFolderSchema, documentSchema, folderSchema, moveFolderSchema, parseBody } from './vaultSchemas.js';
 
 /** Тело запроса как JSON-объект (express.json уже распарсил его на /api). */
 type JsonBody = Record<string, unknown>;
@@ -142,13 +144,50 @@ export function createRestRouter(deps: ServerDeps): Router {
   // POST /pages — создать страницу.
   router.post(
     '/pages',
-    wrap((req, res) => {
-      const body = requireBody(req);
-      const title = requireString(body.title, 'title');
-      const requestId = optionalString(body.requestId);
-      res.json({ page: service.addPage(title, requestId) });
+    wrap(async (req, res) => {
+      res.json({ page: await service.createDocument(parseBody(createSchema, req.body)) });
     })
   );
+
+  router.get('/vault', wrap((_req, res) => { res.json(service.vaultSnapshot()); }));
+  router.post('/vault/folders', wrap((req, res) => {
+    const body = parseBody(folderSchema, req.body); res.json({ snapshot: service.createFolder(body.path, body.expectedTreeVersion) });
+  }));
+  router.post('/vault/folders/move', wrap((req, res) => {
+    const body = parseBody(moveFolderSchema, req.body); res.json(service.moveFolder(body.from, body.path, body.expectedTreeVersion));
+  }));
+  router.delete('/vault/folders', wrap((req, res) => {
+    const body = parseBody(deleteFolderSchema, req.body); res.json({ snapshot: service.deleteFolder(body.path, body.expectedTreeVersion, body.recursive) });
+  }));
+  router.get('/search', wrap((req, res) => {
+    if ((req.query.q !== undefined && typeof req.query.q !== 'string') || (req.query.tag !== undefined && typeof req.query.tag !== 'string')) throw new InvalidRequestError('q и tag должны быть строками');
+    res.json({ hits: service.search(optionalString(req.query.q) ?? '', optionalString(req.query.tag)) });
+  }));
+  router.get('/pages/:pageId/document', wrap((req, res) => {
+    res.json({ document: service.getDocument(requireParam(req.params.pageId, 'pageId')) });
+  }));
+  router.put('/pages/:pageId/document', wrap(async (req, res) => {
+    const document = await service.writeDocument(requireParam(req.params.pageId, 'pageId'), parseBody(documentSchema, req.body));
+    res.json({ document });
+  }));
+  router.patch('/pages/:pageId/metadata', wrap((req, res) => {
+    const body = requireBody(req);
+    res.json({ document: service.patchMetadata(requireParam(req.params.pageId, 'pageId'), {
+      expectedRevision: requireNumber(body.expectedRevision, 'expectedRevision'),
+      expectedVersion: requireString(body.expectedVersion, 'expectedVersion'),
+      ...(body.title !== undefined ? { title: requireString(body.title, 'title') } : {}),
+      ...(body.aliases !== undefined ? { aliases: requireStringArray(body.aliases, 'aliases') } : {}),
+      ...(body.tags !== undefined ? { tags: requireStringArray(body.tags, 'tags') } : {})
+    }) });
+  }));
+  router.post('/pages/:pageId/move', wrap((req, res) => {
+    const body = requireBody(req);
+    res.json(service.movePage(requireParam(req.params.pageId, 'pageId'), {
+      expectedRevision: requireNumber(body.expectedRevision, 'expectedRevision'),
+      expectedVersion: requireString(body.expectedVersion, 'expectedVersion'),
+      path: requireString(body.path, 'path')
+    }));
+  }));
 
   // GET /pages/:pageId — страница целиком (404 отдаёт error-handler через NotFoundError).
   router.get(
@@ -186,7 +225,7 @@ export function createRestRouter(deps: ServerDeps): Router {
       const pageId = requireParam(req.params.pageId, 'pageId');
       const body: JsonBody | undefined = req.body === undefined ? undefined : requireBody(req);
       const expectedRevision = requireExpectedRevision(body, req);
-      service.deletePage(pageId, expectedRevision);
+      service.deletePage(pageId, expectedRevision, optionalString(body?.expectedVersion ?? req.query.expectedVersion));
       res.status(204).end();
     })
   );
@@ -218,7 +257,7 @@ export function createRestRouter(deps: ServerDeps): Router {
         source,
         expectedRevision,
         requestId,
-        layout !== undefined || title !== undefined ? { layout, title } : {}
+        { layout, title, at: body.at === undefined ? undefined : requireNumber(body.at, 'at'), expectedVersion: optionalString(body.expectedVersion) }
       );
       res.json(pageResponse(service.getPage(pageId), result.validation));
     })
@@ -310,14 +349,20 @@ export function createRestRouter(deps: ServerDeps): Router {
       const page = service.getPage(requireParam(req.params.pageId, 'pageId'));
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
       res.setHeader('Content-Disposition', contentDisposition(slugify(page.title)));
-      res.send(exportPageMarkdown(page));
+      res.send(deps.config.vaultPath !== undefined ? service.getDocument(page.id).source : exportPageMarkdown(page));
     })
   );
 
   // GET /export/all.md — весь блокнот одним документом.
+  router.get('/export/all.zip', wrap((_req, res) => {
+    res.setHeader('Content-Type', 'application/zip'); res.setHeader('Content-Disposition', 'attachment; filename="livenote.zip"'); res.send(service.exportVault());
+  }));
   router.get(
     '/export/all.md',
     wrap((req, res) => {
+      if (deps.config.vaultPath !== undefined) {
+        res.setHeader('Content-Type', 'application/zip'); res.setHeader('Content-Disposition', 'attachment; filename="livenote.zip"'); res.send(service.exportVault()); return;
+      }
       const pages = service.listPages().map((summary) => service.getPage(summary.id));
       res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
       res.setHeader('Content-Disposition', contentDisposition('livenote'));
@@ -328,13 +373,17 @@ export function createRestRouter(deps: ServerDeps): Router {
   // POST /import — Markdown-документ в новую страницу.
   router.post(
     '/import',
-    wrap((req, res) => {
+    wrap(async (req, res) => {
       const body = requireBody(req);
       const content = requireString(body.content, 'content');
+      if (deps.config.vaultPath !== undefined) {
+        res.json({ page: await service.createDocument({ title: optionalString(body.title) ?? 'Импортированная заметка', source: content, ...(body.path !== undefined ? { path: requireString(body.path, 'path') } : {}) }) });
+        return;
+      }
       const parsed = parseMarkdownToBlocks(content);
       // Явный title из запроса имеет приоритет над заголовком документа.
       const title = optionalString(body.title) ?? parsed.title;
-      res.json({ page: service.importPage(title, parsed.blocks) });
+      res.json({ page: await service.importPage(title, parsed.blocks) });
     })
   );
 

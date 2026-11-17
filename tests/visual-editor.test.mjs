@@ -61,6 +61,12 @@ async function stored(id) {
   return page;
 }
 
+/** Trigger HeroUI — button; его accessible name включает label и текущее значение. */
+async function selectOption(page, label, value) {
+  await page.getByRole('button', { name: label }).click();
+  await page.getByRole('option').filter({ hasText: value }).last().click();
+}
+
 test('Полноэкранное открытие показывает схему без редактора и записи', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t);
   // Act: открытие уже выполнено через кнопку блока.
@@ -89,7 +95,7 @@ test('Шесть вкладок LiveNote не блокируют сохране�
   // Arrange: каждая вкладка подписывается на обновления того же HTTP-сервера.
   const { page, id, dialog } = await fixture(t, originalClassSource);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Выбранный класс', exact: true }).selectOption('cells');
+  await selectOption(page, 'Выбранный класс', 'cells');
   await page.getByLabel('Подпись класса', { exact: true }).fill('Ячейки склада');
   const current = await stored(id);
   const additionalTabs = [];
@@ -130,8 +136,8 @@ test('Добавление узла и связи сохраняет новую 
   // Act: новый узел соединяют с существующим и сохраняют.
   await page.getByRole('button', { name: 'Добавить узел', exact: true }).click();
   await page.getByLabel('Подпись узла', { exact: true }).fill('Архив');
-  await page.getByRole('combobox', { name: 'От узла', exact: true }).selectOption('Result');
-  await page.getByRole('combobox', { name: 'К узлу', exact: true }).selectOption('node_1');
+  await selectOption(page, 'От узла', 'Result');
+  await selectOption(page, 'К узлу', 'node_1');
   await page.getByLabel('Подпись новой связи', { exact: true }).fill('Завершено');
   await page.getByRole('button', { name: 'Добавить связь', exact: true }).click();
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
@@ -147,7 +153,7 @@ test('Добавление узла и связи сохраняет новую 
 test('Отмена подтверждённых изменений не записывает черновик', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByLabel('Выбранный узел').selectOption('Request');
+  await selectOption(page, 'Выбранный узел', 'Request');
   await page.getByLabel('Подпись узла', { exact: true }).fill('Черновик');
   // Act: пользователь отменяет черновик с подтверждением.
   await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
@@ -161,7 +167,7 @@ test('Отмена подтверждённых изменений не запи
 test('Конфликт ревизии сохраняет серверную версию и оставляет черновик открытым', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByLabel('Выбранный узел').selectOption('Request');
+  await selectOption(page, 'Выбранный узел', 'Request');
   await page.getByLabel('Подпись узла', { exact: true }).fill('Мой черновик');
   const concurrentSource = 'flowchart LR\n  Other["Изменение агента"]';
   await api(`/pages/${id}/blocks/diagram`, { source: concurrentSource, expectedRevision: 2 }, 'PUT');
@@ -173,19 +179,27 @@ test('Конфликт ревизии сохраняет серверную ве
   assert.equal((await stored(id)).blocks[0].source, concurrentSource);
 });
 
-test('Sequence diagram остаётся доступной для просмотра', { timeout: testTimeout }, async (t) => {
+test('Sequence diagram доступна для просмотра и сохранения исходника', { timeout: testTimeout }, async (t) => {
   const source = 'sequenceDiagram\n  Alice->>Bob: Привет';
-  const { page, dialog } = await fixture(t, source);
-  // Act: просмотр другого типа Mermaid.
-  // Assert: графический редактор явно недоступен, сама диаграмма отображается.
-  await expect(dialog.getByRole('button', { name: 'Редактировать', exact: true })).toBeDisabled();
+  const { page, id, dialog } = await fixture(t, source);
   await expect(page.locator('.diagram-fullscreen__svg > svg')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
+  const input = dialog.getByLabel('Исходник Mermaid', { exact: true });
+  await expect(input).toHaveValue(source);
+  const changed = 'sequenceDiagram\n  Alice->>Bob: Новый исходник';
+  await input.fill(changed);
+  await expect(page.locator('.diagram-fullscreen__svg')).toContainText('Новый исходник');
+  await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Редактировать', exact: true })).toBeVisible();
+  const result = await stored(id);
+  assert.equal(result.blocks[0].source, changed);
+  assert.equal(result.revision, 3);
 });
 
 test('Удаление узла удаляет его связи и оставляет другой узел', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByLabel('Выбранный узел').selectOption('Request');
+  await selectOption(page, 'Выбранный узел', 'Request');
   // Act: пользователь удаляет исходный узел и сохраняет диаграмму.
   await page.getByRole('button', { name: 'Удалить узел и его связи', exact: true }).click();
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
@@ -259,9 +273,9 @@ test('Добавляет класс и отношение с выбранным 
   // Act: новый класс добавляют в схему и связывают с существующим.
   await page.getByRole('button', { name: 'Добавить класс', exact: true }).click();
   await page.getByLabel('Подпись класса', { exact: true }).fill('Сектор');
-  await page.getByRole('combobox', { name: 'От класса', exact: true }).selectOption('racks');
-  await page.getByRole('combobox', { name: 'К классу', exact: true }).selectOption('node_1');
-  await page.getByRole('combobox', { name: 'Тип нового отношения', exact: true }).selectOption('o--');
+  await selectOption(page, 'От класса', 'racks');
+  await selectOption(page, 'К классу', 'node_1');
+  await selectOption(page, 'Тип нового отношения', 'o--');
   await page.getByLabel('Подпись нового отношения', { exact: true }).fill('включает');
   await page.getByRole('button', { name: 'Добавить отношение', exact: true }).click();
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
@@ -275,9 +289,9 @@ test('Добавляет класс и отношение с выбранным 
 test('Меняет тип отношения и подпись, сохраняя кардинальности', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t, originalClassSource);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Выбранное отношение', exact: true }).selectOption('edge-0');
+  await selectOption(page, 'Выбранное отношение', 'edge-0');
   // Act: пользователь меняет оператор отношения и его подпись.
-  await page.getByRole('combobox', { name: 'Тип отношения', exact: true }).selectOption('*--');
+  await selectOption(page, 'Тип отношения', '*--');
   await page.getByLabel('Подпись отношения', { exact: true }).fill('содержит');
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Редактировать', exact: true })).toBeVisible();
@@ -288,7 +302,7 @@ test('Меняет тип отношения и подпись, сохраняя
 test('Удаляет класс вместе с отношениями, сохраняя другой класс', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t, originalClassSource);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Выбранный класс', exact: true }).selectOption('cells');
+  await selectOption(page, 'Выбранный класс', 'cells');
   // Act: удаление класса должно убрать все его отношения и стили.
   await page.getByRole('button', { name: 'Удалить класс и его отношения', exact: true }).click();
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
@@ -303,7 +317,7 @@ test('Удаляет класс вместе с отношениями, сохр
 test('Отмена полей classDiagram возвращает исходную схему', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t, originalClassSource);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Выбранный класс', exact: true }).selectOption('cells');
+  await selectOption(page, 'Выбранный класс', 'cells');
   await page.getByLabel('Поля и методы', { exact: true }).fill('text draft');
   // Act: пользователь отменяет черновик.
   await dialog.getByRole('button', { name: 'Отмена', exact: true }).click();
@@ -316,7 +330,7 @@ test('Отмена полей classDiagram возвращает исходную
 test('Некорректное поле класса блокирует сохранение и показывает ошибку', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t, originalClassSource);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Выбранный класс', exact: true }).selectOption('cells');
+  await selectOption(page, 'Выбранный класс', 'cells');
   // Act: пользователь вводит строку, которая меняет структуру исходника.
   await page.getByLabel('Поля и методы', { exact: true }).fill('int value }');
   await page.getByLabel('Подпись класса', { exact: true }).fill('Ячейка');
@@ -330,7 +344,7 @@ test('Некорректное поле класса блокирует сохр
 test('Очищает все поля класса, сохраняя сам класс и его отношения', { timeout: testTimeout }, async (t) => {
   const { page, id, dialog } = await fixture(t, originalClassSource);
   await dialog.getByRole('button', { name: 'Редактировать', exact: true }).click();
-  await page.getByRole('combobox', { name: 'Выбранный класс', exact: true }).selectOption('cells');
+  await selectOption(page, 'Выбранный класс', 'cells');
   // Act: пользователь удаляет весь текст из поля элементов.
   await page.getByLabel('Поля и методы', { exact: true }).fill('');
   await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();

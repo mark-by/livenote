@@ -1,0 +1,138 @@
+.live-preview-editor {
+  display: flex;
+  flex-direction: column;
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: 100%;
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-sans, system-ui, sans-serif);
+}
+
+.lp-host {
+  flex: 1;
+  min-block-size: 0;
+}
+
+.live-preview-editor .cm-editor {
+  block-size: 100%;
+  font-size: 1.0625rem;
+  outline: none;
+}
+
+.live-preview-editor .cm-scroller {
+  overflow: auto;
+  font-family: inherit;
+  line-height: 1.65;
+  scrollbar-width: thin;
+  scrollbar-color: var(--muted) var(--background);
+}
+
+.live-preview-editor .cm-content {
+  inline-size: 100%;
+  max-inline-size: 74ch;
+  margin-inline: auto;
+  padding: calc(var(--spacing) * 8) calc(var(--spacing) * 6);
+  caret-color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.live-preview-editor .cm-line {
+  padding-inline: 0;
+}
+
+.live-preview-editor .cm-content ::selection,
+.live-preview-editor .cm-content::selection,
+.live-preview-editor .cm-selectionBackground {
+  background: color-mix(in oklch, var(--accent) 24%, transparent) !important;
+}
+
+.live-preview-editor .cm-cursor {
+  border-left-color: var(--accent);
+}
+
+.live-preview-editor .cm-editor.cm-focused {
+  outline: none;
+}
+
+.live-preview-editor .cm-content:focus-visible {
+  outline: none;
+}
+
+.lp-heading {
+  font-weight: 650;
+  line-height: 1.3;
+  padding-block-start: calc(var(--spacing) * 6);
+  padding-block-end: calc(var(--spacing) * 2);
+}
+
+.lp-heading-1 { font-size: 2rem; }
+.lp-heading-2 { font-size: 1.6rem; }
+.lp-heading-3 { font-size: 1.28rem; }
+.lp-heading-4,
+.lp-heading-5,
+.lp-heading-6 { font-size: 1.25rem; }
+.lp-strong { font-weight: 700; }
+.lp-emphasis { font-style: italic; }
+.lp-strike { text-decoration: line-through; }
+.lp-marker { color: var(--muted); }
+
+.live-preview-editor .cm-line.lp-list-item {
+  padding-inline-start: calc(var(--spacing) * 4);
+}
+
+.lp-list-marker {
+  display: inline-block;
+  min-inline-size: 1.25em;
+}
+
+.live-preview-editor .cm-line.lp-quote {
+  padding-inline-start: calc(var(--spacing) * 4);
+  border-inline-start: 1px solid var(--separator);
+}
+
+.lp-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: text;
+}
+
+.lp-code,
+.lp-code-line {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--surface-secondary);
+}
+
+.lp-code { border-radius: calc(var(--radius) * 0.5); }
+
+.lp-diagram {
+  margin-block: calc(var(--spacing) * 4);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  white-space: normal;
+}
+
+.lp-diagram:focus-within {
+  background: var(--surface-secondary);
+}
+
+.lp-diagram svg,
+.lp-diagram img {
+  max-inline-size: 100%;
+}
+
+.lp-mode {
+  flex: none;
+  min-block-size: calc(var(--spacing) * 8);
+  padding: var(--spacing) calc(var(--spacing) * 6);
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 40rem) {
+  .live-preview-editor .cm-content {
+    padding: calc(var(--spacing) * 4);
+  }
+}

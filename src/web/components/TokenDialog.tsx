@@ -1,9 +1,6 @@
-/**
- * Модальное окно ввода bearer-токена.
- * Показывается, когда сервер требует токен (tokenRequired) или токен оказался неверным.
- */
-import { useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+/** Диалог bearer-токена с HeroUI-полем и управлением фокусом модального окна. */
+import { useState } from 'react';
+import { Button, Input, Label, Modal, TextField } from '@heroui/react';
 
 interface TokenDialogProps {
   onConfirm(token: string): void;
@@ -11,43 +8,25 @@ interface TokenDialogProps {
 
 export function TokenDialog({ onConfirm }: TokenDialogProps): React.JSX.Element {
   const [value, setValue] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  // Автофокус на поле ввода при открытии.
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  const handleSubmit = (event: FormEvent): void => {
-    event.preventDefault();
-    const token = value.trim();
-    if (token.length > 0) {
-      onConfirm(token);
-    }
-  };
-
   return (
-    <div className="modal-overlay">
-      <form className="modal" onSubmit={handleSubmit}>
-        <h2 className="modal__title">LiveNote защищён токеном</h2>
-        <p className="modal__text">
-          Сервер требует bearer-токен. Введите его — он сохранится локально в браузере.
-        </p>
-        <input
-          ref={inputRef}
-          className="modal__input"
-          type="password"
-          placeholder="Токен"
-          value={value}
-          autoComplete="off"
-          onChange={(event) => setValue(event.target.value)}
-        />
-        <div className="modal__actions">
-          <button className="btn btn--primary" type="submit" disabled={value.trim().length === 0}>
-            Открыть
-          </button>
-        </div>
-      </form>
-    </div>
+    <Modal.Backdrop isOpen isDismissable={false}>
+      <Modal.Container>
+        <Modal.Dialog aria-label="LiveNote защищён токеном">
+          <Modal.Header><Modal.Heading>LiveNote защищён токеном</Modal.Heading></Modal.Header>
+          <Modal.Body>
+            <p className="modal__text">Сервер требует bearer-токен. Он сохранится только в локальном хранилище этого браузера.</p>
+            <TextField fullWidth autoFocus type="password" value={value} onChange={setValue}>
+              <Label>Токен</Label>
+              <Input aria-label="Bearer-токен" autoComplete="off" onKeyDown={(event) => {
+                if (event.key === 'Enter' && value.trim()) onConfirm(value.trim());
+              }} />
+            </TextField>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="primary" isDisabled={!value.trim()} onPress={() => onConfirm(value.trim())}>Открыть</Button>
+          </Modal.Footer>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

@@ -10,6 +10,7 @@ import { dirname } from 'node:path';
 import { SHORT_ID_LENGTH } from '../shared/types.js';
 import type { Block, BlockType, PageFull, PageSummary } from '../shared/types.js';
 import { ConflictError, InvalidRequestError, NotFoundError } from './errors.js';
+import type { PageStore } from './store.js';
 
 /** Данные блока так, как они лежат в БД. */
 interface BlockRow {
@@ -45,7 +46,7 @@ export interface NewBlock {
   title?: string | null;
 }
 
-export class NoteStore {
+export class NoteStore implements PageStore {
   private db: Database.Database;
 
   constructor(dbPath: string) {
@@ -59,7 +60,7 @@ export class NoteStore {
   }
 
   close(): void {
-    this.db.close();
+    if (this.db.open) this.db.close();
   }
 
   private migrate(): void {

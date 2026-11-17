@@ -12,3 +12,5 @@ src/web/public/drawio/
 src/web/public/drawio.staging-*/
 src/web/public/drawio.backup-*/
 .zed
+# heroui-agents-md
+.heroui-docs/
