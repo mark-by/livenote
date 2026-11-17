@@ -4,54 +4,50 @@
    ========================================================================== */
 
 :root {
-  /* Цвета интерфейса */
-  --bg-app: #f4f5f7;
-  --bg-panel: #ffffff;
-  --bg-hover: #f0f1f4;
-  --bg-active: #e8eaf0;
+  /* Семантические алиасы сохранённых редакторов поверх темы HeroUI. */
+  --bg-app: var(--background);
+  --bg-panel: var(--surface);
+  --bg-hover: var(--surface-secondary);
+  --bg-active: var(--surface-tertiary);
 
-  --border: #e2e4e9;
-  --border-strong: #d3d6dd;
+  --border-strong: var(--border);
 
-  --text-primary: #1f2328;
-  --text-secondary: #59606b;
-  --text-muted: #8b909a;
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted);
+  --text-muted: var(--muted);
 
-  --accent: #3d6bd6;
-  --accent-hover: #3158b9;
-  --accent-contrast: #ffffff;
+  --accent-contrast: var(--accent-foreground);
 
-  --danger: #d33c3c;
-  --danger-bg: #fbecec;
-  --warning-bg: #fdf3d7;
-  --warning-border: #f0dfa8;
-  --warning-text: #7a5c12;
+  --danger-bg: var(--danger-soft);
+  --warning-bg: var(--warning-soft);
+  --warning-border: var(--warning);
+  --warning-text: var(--warning-soft-foreground);
 
-  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --shadow-2: 0 1px 3px rgba(16, 24, 40, 0.08), 0 4px 12px rgba(16, 24, 40, 0.06);
+  --shadow-1: var(--shadow-surface);
+  --shadow-2: var(--shadow-overlay);
 
-  /* Геометрия */
-  --sidebar-width: 260px;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  /* Геометрия приложения и ритм HeroUI. */
+  --sidebar-width: 17rem;
+  --radius-sm: calc(var(--radius) * 0.75);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) * 1.5);
 
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
+  --space-1: calc(var(--spacing) * 1);
+  --space-2: calc(var(--spacing) * 2);
+  --space-3: calc(var(--spacing) * 3);
+  --space-4: calc(var(--spacing) * 4);
+  --space-5: calc(var(--spacing) * 6);
+  --space-6: calc(var(--spacing) * 8);
 
   /* Типографика */
-  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --font-ui: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
 
-  --fs-xs: 12px;
-  --fs-sm: 13px;
-  --fs-md: 14px;
-  --fs-lg: 17px;
-  --fs-xl: 24px;
+  --fs-xs: var(--text-xs);
+  --fs-sm: var(--text-sm);
+  --fs-md: var(--text-sm);
+  --fs-lg: var(--text-lg);
+  --fs-xl: var(--text-2xl);
 }
 
 * {
@@ -87,8 +83,8 @@ button {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: 1px solid var(--separator);
+  outline-offset: 2px;
 }
 
 /* --------------------------------------------------------------------------
@@ -118,6 +114,7 @@ textarea:focus-visible {
    -------------------------------------------------------------------------- */
 
 .topbar {
+  min-width: 0;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -126,6 +123,8 @@ textarea:focus-visible {
 }
 
 .toolbar {
+  min-width: 0;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -398,6 +397,18 @@ textarea:focus-visible {
   padding: var(--space-4);
   color: var(--text-muted);
   font-size: var(--fs-sm);
+}
+
+.legacy-storage-note {
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-xs);
+}
+
+.legacy-storage-note code {
+  overflow-wrap: anywhere;
 }
 
 /* --------------------------------------------------------------------------

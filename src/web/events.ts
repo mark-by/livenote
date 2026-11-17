@@ -12,6 +12,8 @@ export interface EventHandlers {
   onPageCreated?: (event: LiveEvent) => void;
   onPageUpdated?: (event: LiveEvent) => void;
   onPageDeleted?: (event: LiveEvent) => void;
+  onPageMoved?: (event: LiveEvent) => void;
+  onVaultUpdated?: (event: LiveEvent) => void;
   onBlockCreated?: (event: LiveEvent) => void;
   onBlockUpdated?: (event: LiveEvent) => void;
   onBlockDeleted?: (event: LiveEvent) => void;
@@ -26,6 +28,8 @@ const EVENT_NAMES: Array<{ name: LiveEventName; handler: keyof EventHandlers }> 
   { name: 'page.created', handler: 'onPageCreated' },
   { name: 'page.updated', handler: 'onPageUpdated' },
   { name: 'page.deleted', handler: 'onPageDeleted' },
+  { name: 'page.moved', handler: 'onPageMoved' },
+  { name: 'vault.updated', handler: 'onVaultUpdated' },
   { name: 'block.created', handler: 'onBlockCreated' },
   { name: 'block.updated', handler: 'onBlockUpdated' },
   { name: 'block.deleted', handler: 'onBlockDeleted' }

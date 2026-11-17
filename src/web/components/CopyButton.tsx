@@ -4,6 +4,8 @@
  * Внешний вид задаётся полностью через className (у каждого контейнера свои кнопки).
  */
 import { useEffect, useRef, useState } from 'react';
+import { Button, Tooltip } from '@heroui/react';
+import { Copy, Check } from '@gravity-ui/icons';
 
 interface CopyButtonProps {
   /** Что скопировать: исходник блока (markdown-текст, mermaid, BPMN XML). */
@@ -12,45 +14,6 @@ interface CopyButtonProps {
   title: string;
   /** Стиль кнопки контейнера (block-action / mermaid-expand-стиль / bpmn-controls__btn). */
   className: string;
-}
-
-/** Иконка «копировать» (lucide copy, stroke-стиль). */
-function CopyIcon(): React.JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-    </svg>
-  );
-}
-
-/** Иконка-галочка: показывается 1.5 секунды после успешного копирования. */
-function CheckIcon(): React.JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M20 6L9 17l-5-5" />
-    </svg>
-  );
 }
 
 export function CopyButton({ text, title, className }: CopyButtonProps): React.JSX.Element {
@@ -66,8 +29,7 @@ export function CopyButton({ text, title, className }: CopyButtonProps): React.J
     };
   }, []);
 
-  const copy = (event: React.MouseEvent<HTMLButtonElement>): void => {
-    event.stopPropagation();
+  const copy = (): void => {
     void navigator.clipboard
       .writeText(text)
       .then(() => {
@@ -83,14 +45,15 @@ export function CopyButton({ text, title, className }: CopyButtonProps): React.J
   };
 
   return (
-    <button
-      type="button"
+    <Tooltip delay={300}><Button
+      variant="ghost"
+      size="sm"
       className={className}
-      onClick={copy}
-      title={copied ? 'Скопировано' : title}
+      onPress={copy}
       aria-label={copied ? 'Скопировано' : title}
+      isIconOnly
     >
-      {copied ? <CheckIcon /> : <CopyIcon />}
-    </button>
+      {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+    </Button><Tooltip.Content>{copied ? 'Скопировано' : title}</Tooltip.Content></Tooltip>
   );
 }

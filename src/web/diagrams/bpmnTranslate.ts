@@ -1,0 +1,41 @@
+const labels: Readonly<Record<string, string>> = {
+  'Activate hand tool': 'Переместить холст',
+  'Activate lasso tool': 'Выделить область',
+  'Activate create/remove space tool': 'Добавить или убрать пространство',
+  'Activate global connect tool': 'Соединить элементы',
+  'Create start event': 'Создать начальное событие',
+  'Create intermediate/boundary event': 'Создать промежуточное событие',
+  'Create end event': 'Создать конечное событие',
+  'Create gateway': 'Создать развилку',
+  'Create task': 'Создать задачу',
+  'Create expanded sub-process': 'Создать подпроцесс',
+  'Create data object reference': 'Создать объект данных',
+  'Create data store reference': 'Создать хранилище данных',
+  'Create pool/participant': 'Создать участника',
+  'Create group': 'Создать группу',
+  'Append task': 'Добавить задачу',
+  'Append end event': 'Добавить конечное событие',
+  'Append gateway': 'Добавить развилку',
+  'Append intermediate/boundary event': 'Добавить промежуточное событие',
+  'Append receive task': 'Добавить задачу получения',
+  'Append message intermediate catch event': 'Добавить получение сообщения',
+  'Append timer intermediate catch event': 'Добавить таймер',
+  'Append conditional intermediate catch event': 'Добавить условное событие',
+  'Append signal intermediate catch event': 'Добавить получение сигнала',
+  'Append compensation activity': 'Добавить компенсацию',
+  'Change element': 'Изменить тип элемента',
+  'Add text annotation': 'Добавить пояснение',
+  'Connect to other element': 'Соединить с другим элементом',
+  'Connect using association': 'Добавить ассоциацию',
+  'Connect using data input association': 'Связать входные данные',
+  'Add lane above': 'Добавить дорожку сверху',
+  'Add lane below': 'Добавить дорожку снизу',
+  'Divide into two lanes': 'Разделить на две дорожки',
+  'Divide into three lanes': 'Разделить на три дорожки',
+  'Delete': 'Удалить'
+};
+
+export function bpmnTranslate(template: string, replacements: Readonly<Record<string, string>> = {}): string {
+  return (labels[template] ?? template).replace(/{([^}]+)}/g,
+    (match: string, key: string) => replacements[key] ?? match);
+}

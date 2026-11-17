@@ -1,0 +1,20 @@
+:root {
+  --accent: oklch(51% 0.13 253.83);
+  --muted: oklch(43% 0.0138 285.94);
+}
+
+[data-theme='dark'],
+.dark {
+  --accent: oklch(70% 0.13 253.83);
+  --accent-foreground: oklch(21.03% 0.0059 285.89);
+  --muted: oklch(74% 0.015 286.067);
+}
+
+.vault-app .search-field__input::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.vault-document__status .chip--success.chip--soft {
+  color: var(--foreground);
+}

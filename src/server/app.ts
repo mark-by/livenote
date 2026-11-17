@@ -10,6 +10,9 @@ import { dirname, join } from 'node:path';
 import { LIVENOTE_VERSION } from '../shared/types.js';
 import type { AppConfig, LiveEvent } from '../shared/types.js';
 import { NoteStore } from './db.js';
+import type { PageStore } from './store.js';
+import { VaultStore } from './vault.js';
+import { DocumentProblem } from './vaultDocument.js';
 import { NoteService } from './services.js';
 import { AppError } from './errors.js';
 import type { ServerDeps } from './ports.js';
@@ -30,12 +33,13 @@ export interface RunningApp {
   app: Express;
   broadcaster: SseBroadcaster;
   service: NoteService;
-  store: NoteStore;
+  store: PageStore;
+  close(): Promise<void>;
 }
 
 export async function createApp(config: import('../shared/types.js').AppConfig): Promise<RunningApp> {
-  const store = new NoteStore(config.dbPath);
   const broadcaster = new SseBroadcaster();
+  const store = config.vaultPath !== undefined ? new VaultStore(config.vaultPath, broadcaster) : new NoteStore(config.dbPath);
   const validator = await createValidator(config.mermaidTheme);
   const bpmnValidator = await createBpmnValidator();
   const drawioValidator = await createDrawioValidator({ baseUrl: `http://127.0.0.1:${config.port}` });
@@ -95,7 +99,7 @@ export async function createApp(config: import('../shared/types.js').AppConfig):
 
   // --- Каналы приложения ------------------------------------------------------
   app.get('/api/config', (req, res) => {
-    res.json({ version: LIVENOTE_VERSION, tokenRequired: authRequired, mermaidTheme: config.mermaidTheme });
+    res.json({ version: LIVENOTE_VERSION, tokenRequired: authRequired, mermaidTheme: config.mermaidTheme, storage: config.vaultPath !== undefined ? 'vault' : 'sqlite' });
   });
 
   app.use('/events', requireAuth, createEventsRouter(deps));
@@ -156,6 +160,10 @@ export async function createApp(config: import('../shared/types.js').AppConfig):
 
   // --- Единый маппинг ошибок --------------------------------------------------
   app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
+    if (error instanceof DocumentProblem) {
+      res.status(400).json({ error: { code: 'invalid_request', message: error.message, details: { problem: error.code } } });
+      return;
+    }
     if (error instanceof AppError) {
       res.status(error.httpStatus).json({
         error: { code: error.code, message: error.message, ...(error.details !== undefined ? { details: error.details } : {}) }
@@ -167,7 +175,19 @@ export async function createApp(config: import('../shared/types.js').AppConfig):
     res.status(500).json({ error: { code: 'internal', message } });
   });
 
-  return { app, broadcaster, service, store };
+  let closed = false;
+  return {
+    app, broadcaster, service, store,
+    async close() {
+      if (closed) return;
+      closed = true;
+      await Promise.all([Promise.resolve().then(() => store.close()), ...[validator, bpmnValidator, drawioValidator].map(async candidate => {
+        const resource = candidate as { close?: () => Promise<void>; browser?: { close(): Promise<void> } };
+        if (resource.close) await resource.close();
+        else await resource.browser?.close();
+      })]);
+    }
+  };
 }
 
 /** Экспорт для типов, используемых в модулях-реализациях. */

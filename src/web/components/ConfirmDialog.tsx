@@ -11,6 +11,7 @@
  * фокус по умолчанию стоит на «Отмене» (деструктивное действие — не по Enter).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button, Modal } from '@heroui/react';
 import type { ReactNode } from 'react';
 
 export interface ConfirmOptions {
@@ -69,43 +70,20 @@ interface ConfirmDialogProps {
 }
 
 function ConfirmDialog({ options, onConfirm, onCancel }: ConfirmDialogProps): React.JSX.Element {
-  const cancelRef = useRef<HTMLButtonElement>(null);
-
-  // Фокус на безопасной кнопке («Отмена») при открытии.
-  useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
-
-  // Esc = отмена.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onCancel();
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onCancel]);
-
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={options.title}>
-      <div className="modal">
-        <h2 className="modal__title">{options.title}</h2>
-        <p className="modal__text">{options.message}</p>
-        <div className="modal__actions">
-          <button ref={cancelRef} className="btn" type="button" onClick={onCancel}>
-            Отмена
-          </button>
-          <button
-            className={`btn ${options.danger === true ? 'btn--danger' : 'btn--primary'}`}
-            type="button"
-            onClick={onConfirm}
-          >
-            {options.confirmLabel ?? 'Подтвердить'}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal.Backdrop isOpen onOpenChange={(open) => { if (!open) onCancel(); }}>
+      <Modal.Container>
+        <Modal.Dialog aria-label={options.title}>
+          <Modal.Header><Modal.Heading>{options.title}</Modal.Heading></Modal.Header>
+          <Modal.Body><p className="modal__text">{options.message}</p></Modal.Body>
+          <Modal.Footer>
+            <Button autoFocus variant="ghost" onPress={onCancel}>Отмена</Button>
+            <Button variant={options.danger === true ? 'danger' : 'primary'} onPress={onConfirm}>
+              {options.confirmLabel ?? 'Подтвердить'}
+            </Button>
+          </Modal.Footer>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

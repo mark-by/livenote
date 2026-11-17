@@ -7,6 +7,7 @@ import type { FlowchartEdit, FlowchartEdge, FlowchartModel, FlowchartNode } from
 import { applyClassDiagramEdit, readClassDiagram } from '../classDiagram';
 import type { ClassDiagramEdit, ClassRelation } from '../classDiagram';
 import { useConfirm } from './ConfirmDialog';
+import type { DiagramCommit } from '../diagrams/types';
 
 export type DiagramSelection = { type: 'node' | 'edge'; id: string } | null;
 
@@ -19,13 +20,15 @@ interface EditableDiagramModel extends FlowchartModel {
 interface EditorProps {
   block: Block;
   pageRevision: number;
-  onSaved(source: string, revision: number): void;
+  onSaved?(source: string, revision: number): void;
   onClose(): void;
+  onCommit?: DiagramCommit;
+  initialEditing?: boolean;
 }
 
 /** Черновик хранит исходную ревизию до успешной записи. SSE не заменяет его. */
-export function useDiagramEditor({ block, pageRevision, onSaved, onClose }: EditorProps) {
-  const [draft, setDraft] = useState<string | null>(null);
+export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onCommit, initialEditing = false }: EditorProps) {
+  const [draft, setDraft] = useState<string | null>(initialEditing ? block.source : null);
   const [selection, setSelection] = useState<DiagramSelection>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,17 +111,21 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose }: Edit
   };
 
   const save = async (): Promise<void> => {
-    if (!dirty || saving || memberError !== null) return;
+    if ((!dirty && !onCommit) || saving || memberError !== null) return;
     setSaving(true);
     setError(null);
     try {
-      const body = { source, expectedRevision: pageRevision };
-      const result = await updateBlock(block.pageId, block.id, body);
-      if (result.validation?.syntax === 'error') {
-        setError(result.validation.error?.message ?? 'Mermaid отклонил изменения.');
-        return;
+      if (onCommit) {
+        await onCommit(source);
+      } else {
+        const body = { source, expectedRevision: pageRevision };
+        const result = await updateBlock(block.pageId, block.id, body);
+        if (result.validation?.syntax === 'error') {
+          setError(result.validation.error?.message ?? 'Mermaid отклонил изменения.');
+          return;
+        }
+        onSaved?.(source, result.revision);
       }
-      onSaved(source, result.revision);
       setDraft(null);
       setMemberDrafts({});
       setSelection(null);
@@ -136,6 +143,14 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose }: Edit
     setMemberDrafts({});
     setError(null);
     setSelection(null);
+  };
+
+  const editSource = (next: string): void => {
+    if (!editing || saving) return;
+    setDraft(next);
+    setMemberDrafts({});
+    setSelection(null);
+    setError(null);
   };
 
   const selectFromDiagram = (event: MouseEvent<HTMLDivElement>): void => {
@@ -166,9 +181,9 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose }: Edit
   };
 
   return {
-    source, model, editing, dirty, saving, error: memberError ?? error, memberDrafts, selection, dialog,
-    start, edit, save, selectFromDiagram, decorate, setSelection,
-    cancel: () => leave(false),
+    source, model, editing, dirty, saving, valid: memberError === null, error: memberError ?? error, memberDrafts, selection, dialog,
+    start, edit, editSource, save, selectFromDiagram, decorate, setSelection,
+    cancel: () => leave(onCommit !== undefined),
     close: () => leave(true)
   };
 }

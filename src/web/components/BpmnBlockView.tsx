@@ -15,12 +15,15 @@
  * только повторный importXML.
  */
 import { useEffect, useRef, useState } from 'react';
+import { Button } from '@heroui/react';
 import NavigatedViewer from 'bpmn-js/lib/NavigatedViewer';
 import type Canvas from 'diagram-js/lib/core/Canvas';
 import type { Block } from '../../shared/types';
 import { confirmRendered } from '../api';
 import { downloadDiagramSvg, downloadTextFile } from '../svgDownload';
 import { CopyButton } from './CopyButton';
+import { ArrowDownToLine, ArrowsExpand, MagnifierPlus, MagnifierMinus } from '@gravity-ui/icons';
+import { DiagramAction } from '../diagrams/DiagramAction';
 
 // Стили bpmn-js: базовый рендер диаграммы + шрифт-иконки (встроены base64,
 // внешние сетевые ресурсы не подгружаются).
@@ -34,30 +37,10 @@ interface BpmnBlockViewProps {
   pageRevision: number;
   /** Открыть диаграмму в полноэкранном режиме (опционально). */
   onExpand?: () => void;
+  persisted?: boolean;
 }
 
-function DownloadIcon(): React.JSX.Element {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <path d="M7 10l5 5 5-5" />
-      <path d="M12 15V3" />
-    </svg>
-  );
-}
-
-export function BpmnBlockView({ block, pageRevision, onExpand }: BpmnBlockViewProps): React.JSX.Element {
+export function BpmnBlockView({ block, pageRevision, onExpand, persisted = true }: BpmnBlockViewProps): React.JSX.Element {
   // Контейнер, куда bpmn-js вкладывает свой .djs-container.
   const hostRef = useRef<HTMLDivElement>(null);
   // Единственный экземпляр viewer на время жизни компонента.
@@ -94,6 +77,7 @@ export function BpmnBlockView({ block, pageRevision, onExpand }: BpmnBlockViewPr
     const report = (rawError: unknown): void => {
       const message = rawError instanceof Error ? rawError.message : String(rawError);
       setError(message);
+      if (!persisted) return;
       void confirmRendered(block.pageId, block.id, {
         revision: pageRevision,
         ok: false,
@@ -120,7 +104,7 @@ export function BpmnBlockView({ block, pageRevision, onExpand }: BpmnBlockViewPr
         // (б) Только успех последнего запроса: фит по вьюпорту и подтверждение.
         canvas.zoom('fit-viewport');
         setError(null);
-        void confirmRendered(block.pageId, block.id, { revision: pageRevision, ok: true }).catch(() => {
+        if (persisted) void confirmRendered(block.pageId, block.id, { revision: pageRevision, ok: true }).catch(() => {
           // Ошибка подтверждения не критична для отображения.
         });
       })
@@ -136,7 +120,7 @@ export function BpmnBlockView({ block, pageRevision, onExpand }: BpmnBlockViewPr
       disposed = true;
     };
     // Рендерим заново при изменении исходника блока (повторный importXML, не новый viewer).
-  }, [block.source, block.id, block.pageId, pageRevision]);
+  }, [block.source, block.id, block.pageId, pageRevision, persisted]);
 
   // Уничтожаем viewer при размонтировании компонента.
   useEffect(() => {
@@ -150,7 +134,7 @@ export function BpmnBlockView({ block, pageRevision, onExpand }: BpmnBlockViewPr
 
   const zoomBy = (factor: number): void => {
     const canvas = viewerRef.current?.get<Canvas>('canvas');
-    canvas?.zoom(factor);
+    if (canvas) canvas.zoom(canvas.zoom() * factor);
   };
 
   const zoomToFit = (): void => {
@@ -176,7 +160,7 @@ export function BpmnBlockView({ block, pageRevision, onExpand }: BpmnBlockViewPr
 
   // Бейдж «предыдущая версия», если сервер знает, что последняя ревизия не отображалась.
   const showStaleBadge =
-    block.renderOk === false && block.renderedRevision !== null && block.renderedRevision < pageRevision;
+    block.renderOk === false && block.renderedRevision !== null && block.renderedRevision !== pageRevision;
 
   return (
     <div className="bpmn-block">
@@ -185,39 +169,13 @@ export function BpmnBlockView({ block, pageRevision, onExpand }: BpmnBlockViewPr
       <div className="bpmn-view-host" ref={hostRef}>
         <div className="bpmn-controls">
           <CopyButton text={block.source} title="Копировать исходник" className="bpmn-controls__btn" />
-          {onExpand && (
-            <button
-              type="button"
-              className="bpmn-controls__btn"
-              onClick={onExpand}
-              title="Открыть на весь экран"
-              aria-label="Во весь экран"
-            >
-              ⛶
-            </button>
-          )}
-          <button
-            type="button"
-            className="bpmn-controls__btn"
-            onClick={(event) => {
-              // Не даём клику распространяться за пределы блока.
-              event.stopPropagation();
-              downloadSvg();
-            }}
-            title="Скачать SVG"
-            aria-label="Скачать SVG"
-          >
-            <DownloadIcon />
-          </button>
-          <button type="button" className="bpmn-controls__btn" onClick={() => zoomBy(1.2)} aria-label="Приблизить BPMN-схему">
-            +
-          </button>
-          <button type="button" className="bpmn-controls__btn" onClick={() => zoomBy(0.8)} aria-label="Отдалить BPMN-схему">
-            −
-          </button>
-          <button type="button" className="bpmn-controls__btn" onClick={zoomToFit} aria-label="Сбросить масштаб BPMN-схемы">
-            Сброс
-          </button>
+          {onExpand && <DiagramAction label="Во весь экран" icon={ArrowsExpand} onPress={onExpand} className="bpmn-controls__btn" />}
+          <DiagramAction label="Скачать SVG" icon={ArrowDownToLine} onPress={downloadSvg} className="bpmn-controls__btn" />
+          <DiagramAction label="Приблизить BPMN-схему" icon={MagnifierPlus} onPress={() => zoomBy(1.2)} className="bpmn-controls__btn" />
+          <DiagramAction label="Отдалить BPMN-схему" icon={MagnifierMinus} onPress={() => zoomBy(0.8)} className="bpmn-controls__btn" />
+          <DiagramAction label="Сбросить масштаб BPMN-схемы" icon={ArrowsExpand} onPress={zoomToFit} className="bpmn-controls__btn" />
+          <Button variant="ghost" size="sm" aria-label="Скачать BPMN XML"
+            onPress={() => downloadTextFile(block.source, `${block.id}.bpmn`, 'application/xml')}>XML</Button>
         </div>
       </div>
 

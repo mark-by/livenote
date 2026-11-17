@@ -1,13 +1,10 @@
-/**
- * Модальное окно настроек интерфейса: тема mermaid, ширина страницы,
- * «Следовать за изменениями». Открывается кнопкой-шестерёнкой в тулбаре;
- * настройки живут в App (ширина, следование) и в mermaidInit (тема).
- */import { useEffect, useRef, useState } from 'react';
+/** Настройки интерфейса на доступных HeroUI-контролах. */
+import { useState } from 'react';
+import { Button, Label, ListBox, Modal, Select, Switch } from '@heroui/react';
 import { MERMAID_THEMES } from '../../shared/types';
 import type { MermaidTheme } from '../../shared/types';
 import { getThemeOverride, setThemeOverride } from '../mermaidInit';
 
-/** Варианты ширины страницы. */
 export type PageWidth = 'standard' | 'wide' | 'full';
 
 export const PAGE_WIDTHS: Array<{ value: PageWidth; label: string }> = [
@@ -26,84 +23,59 @@ interface SettingsDialogProps {
   onPageWidthChange(width: PageWidth): void;
   followEvents: boolean;
   onFollowChange(follow: boolean): void;
+  vimEnabled?: boolean;
+  onVimEnabledChange?: (enabled: boolean) => void;
   onClose(): void;
 }
 
-export function SettingsDialog({
-  pageWidth,
-  onPageWidthChange,
-  followEvents,
-  onFollowChange,
-  onClose
-}: SettingsDialogProps): React.JSX.Element {
-  const closeRef = useRef<HTMLButtonElement>(null);
+export function SettingsDialog(props: SettingsDialogProps): React.JSX.Element {
   const [theme, setTheme] = useState<string>(() => getThemeOverride() ?? '');
-
-  useEffect(() => {
-    closeRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
-
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Настройки">
-      <div className="modal">
-        <h2 className="modal__title">Настройки</h2>
-        <label className="settings__row">
-          <span>Тема mermaid</span>
-          <select
-            className="toolbar__select"
-            value={theme}
-            onChange={(event) => {
-              const value = event.target.value;
-              setTheme(value);
-              setThemeOverride(value === '' ? null : (value as MermaidTheme));
-            }}
-          >
-            {THEME_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="settings__row">
-          <span>Ширина страницы</span>
-          <select
-            className="toolbar__select"
-            value={pageWidth}
-            onChange={(event) => onPageWidthChange(event.target.value as PageWidth)}
-          >
-            {PAGE_WIDTHS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="settings__row settings__row--check">
-          <input
-            type="checkbox"
-            checked={followEvents}
-            onChange={(event) => onFollowChange(event.target.checked)}
-          />
-          <span>Следовать за изменениями</span>
-        </label>
-        <div className="modal__actions">
-          <button ref={closeRef} className="btn btn--primary" type="button" onClick={onClose}>
-            Готово
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal.Backdrop isOpen onOpenChange={(open) => { if (!open) props.onClose(); }}>
+      <Modal.Container>
+        <Modal.Dialog aria-label="Настройки">
+          <Modal.Header><Modal.Heading>Настройки</Modal.Heading><Modal.CloseTrigger aria-label="Закрыть настройки" /></Modal.Header>
+          <Modal.Body>
+            <div className="vault-dialog-fields">
+              <Select value={theme} onChange={(value) => {
+                const next = String(value ?? '');
+                setTheme(next);
+                setThemeOverride(next === '' ? null : next as MermaidTheme);
+              }}>
+                <Label>Тема Mermaid</Label>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover><ListBox>
+                  {THEME_OPTIONS.map((option) => (
+                    <ListBox.Item key={option.value || 'server'} id={option.value} textValue={option.label}>
+                      {option.label}<ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  ))}
+                </ListBox></Select.Popover>
+              </Select>
+              <Select value={props.pageWidth} onChange={(value) => props.onPageWidthChange(String(value) as PageWidth)}>
+                <Label>Ширина страницы</Label>
+                <Select.Trigger><Select.Value /><Select.Indicator /></Select.Trigger>
+                <Select.Popover><ListBox>
+                  {PAGE_WIDTHS.map((option) => (
+                    <ListBox.Item key={option.value} id={option.value} textValue={option.label}>
+                      {option.label}<ListBox.ItemIndicator />
+                    </ListBox.Item>
+                  ))}
+                </ListBox></Select.Popover>
+              </Select>
+              <Switch isSelected={props.vimEnabled ?? false} onChange={props.onVimEnabledChange}>
+                <Switch.Control><Switch.Thumb /></Switch.Control>
+                <Switch.Content><Label>Vim mode</Label></Switch.Content>
+              </Switch>
+              <Switch isSelected={props.followEvents} onChange={props.onFollowChange}>
+                <Switch.Control><Switch.Thumb /></Switch.Control>
+                <Switch.Content><Label>Следовать за изменениями</Label></Switch.Content>
+              </Switch>
+            </div>
+          </Modal.Body>
+          <Modal.Footer><Button variant="primary" onPress={props.onClose}>Готово</Button></Modal.Footer>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }

@@ -25,7 +25,7 @@ export type WriteLayout = 'preserve' | 'auto';
  * для mermaid — чистый Mermaid БЕЗ ограждения ```mermaid.
  */
 export interface Block {
-  /** Стабильный ID внутри страницы (например "main-flow"). Не зависит от названия и порядка. */
+  /** SQLite: стабильный ID. Vault: временный span-N только данной ревизии, на диск не записывается. */
   id: string;
   pageId: string;
   type: BlockType;
@@ -157,12 +157,16 @@ export type LiveEventName =
   | 'page.created'
   | 'page.updated'
   | 'page.deleted'
+  | 'page.moved'
+  | 'vault.updated'
   | 'block.created'
   | 'block.updated'
   | 'block.deleted';
 
 /** Лёгкое событие для UI: полные данные UI добирает GET-ом по pageId. */
 export interface LiveEvent {
+  previousPath?: string;
+  origin?: 'api' | 'external';
   event: LiveEventName;
   pageId: string;
   /** Ревизия страницы после изменения. */
@@ -210,6 +214,7 @@ export type MermaidTheme = (typeof MERMAID_THEMES)[number];
 
 /** Тело GET /api/config — настройки, нужные UI до аутентификации. */
 export interface ApiConfig {
+  storage?: 'vault' | 'sqlite';
   version: string;
   tokenRequired: boolean;
   mermaidTheme: MermaidTheme;
@@ -251,6 +256,7 @@ export interface AppConfig {
   /** Всегда 127.0.0.1 — наружу не слушаем. */
   host: '127.0.0.1';
   dbPath: string;
+  vaultPath?: string;
   /** Bearer-токен для /mcp и /api. null — аутентификация отключена. */
   token: string | null;
   openBrowser: boolean;
@@ -270,3 +276,132 @@ export const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
 /** Длина сокращённого автосгенерированного ID. */
 export const SHORT_ID_LENGTH = 8;
+
+export type VaultProblemCode =
+  | 'missing_id' | 'invalid_frontmatter' | 'duplicate_page_id'
+  | 'invalid_block' | 'duplicate_block_id' | 'missing_asset'
+  | 'unsafe_path' | 'git_conflict' | 'unreadable_file';
+
+export interface VaultProblem {
+  code: VaultProblemCode;
+  path: string;
+  message: string;
+  pageId?: string;
+  blockId?: string;
+}
+
+export interface VaultPageSummary extends PageSummary {
+  path: string;
+  aliases: string[];
+  tags: string[];
+}
+
+export interface VaultLink {
+  target: string;
+  targetPageId: string | null;
+  label: string | null;
+  kind: 'wiki' | 'markdown';
+  fragment: string | null;
+}
+
+export interface VaultBacklink {
+  pageId: string;
+  title: string;
+  path: string;
+}
+
+export interface VaultAsset {
+  type: DiagramFormat;
+  path: string;
+  source: string | null;
+  version: string | null;
+}
+
+export interface SourceRange { from: number; to: number }
+
+export interface VaultSourceSpan extends SourceRange {
+  blockId: string;
+  type: BlockType;
+  sourceFrom: number;
+  sourceTo: number;
+  assetPath?: string;
+}
+
+export interface VaultDocument {
+  page: PageFull;
+  path: string;
+  source: string;
+  version: string;
+  spans: VaultSourceSpan[];
+  aliases: string[];
+  tags: string[];
+  assets: VaultAsset[];
+  links: VaultLink[];
+  backlinks: VaultBacklink[];
+}
+
+export interface VaultSnapshot {
+  pages: VaultPageSummary[];
+  files: Array<{ path: string; kind: 'markdown' | DiagramFormat; title: string; version: string; revision: number }>;
+  folders: string[];
+  treeVersion: string;
+  tags: Array<{ tag: string; count: number }>;
+  problems: VaultProblem[];
+}
+
+export interface WriteVaultDocumentBody {
+  expectedRevision: number;
+  expectedVersion: string;
+  source: string;
+  assets?: Array<{ path: string; source: string; expectedVersion: string | null; layout?: WriteLayout }>;
+  references?: Array<{ path: string; expectedVersion: string }>;
+  requestId?: string;
+}
+
+export interface PatchVaultMetadataBody {
+  expectedRevision: number;
+  expectedVersion: string;
+  title?: string;
+  aliases?: string[];
+  tags?: string[];
+}
+
+export interface MoveVaultPageBody {
+  expectedRevision: number;
+  expectedVersion: string;
+  path: string;
+}
+
+export interface VaultMoveResult {
+  document?: VaultDocument;
+  moved: Array<{ from: string; to: string }>;
+  updatedPaths: string[];
+  treeVersion: string;
+}
+
+export interface VaultSearchHit {
+  pageId: string;
+  title: string;
+  path: string;
+  tags: string[];
+  excerpt: string;
+}
+
+export interface VaultConflictDetails {
+  currentRevision: number;
+  currentVersion?: string;
+  currentTreeVersion?: string;
+  reason?: 'stale' | 'missing' | 'document_problem' | 'destination_exists' | 'transaction_incomplete';
+  paths?: string[];
+  problems?: VaultProblem[];
+}
+
+export interface CreatePageBody {
+  title: string;
+  requestId?: string;
+  path?: string;
+  source?: string;
+  format?: DiagramFormat;
+  aliases?: string[];
+  tags?: string[];
+}
