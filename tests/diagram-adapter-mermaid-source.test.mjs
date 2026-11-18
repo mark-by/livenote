@@ -37,6 +37,7 @@ test('sequenceDiagram редактируется с live preview, удержив
   await expect(page.getByLabel('Попытки сохранения')).toHaveText('1');
   await source.fill('sequenceDiagram\nAlice ->>>');
   await expect(dialog.getByRole('alert')).toContainText('Ошибка рендера');
+  await expect(dialog.locator('.diagram-fullscreen__svg')).toContainText('Первая версия');
   await expect(dialog.getByRole('button', { name: 'Сохранить', exact: true })).toBeDisabled();
   await source.press('ControlOrMeta+s');
   await expect(page.getByLabel('Попытки сохранения')).toHaveText('1');

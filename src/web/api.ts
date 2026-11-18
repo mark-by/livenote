@@ -7,6 +7,7 @@ import type {
   ApiConfig,
   Block,
   LiveEvent,
+  MermaidTheme,
   CreatePageBody,
   MoveVaultPageBody,
   PageFull,
@@ -27,6 +28,37 @@ export const TOKEN_STORAGE_KEY = 'livenote_token';
 
 /** Событие на window: токен протух/неверен — UI должен показать диалог ввода. */
 export const UNAUTHORIZED_EVENT = 'livenote:unauthorized';
+
+export interface WebApiConfig extends ApiConfig {
+  readonly defaultVaultId?: string;
+  readonly folderPickerAvailable?: boolean;
+}
+
+export interface VaultLocationScope {
+  readonly id: string | null;
+  readonly explicit: boolean;
+}
+
+/** Читает область хранилища из стабильного URL текущей вкладки. */
+export function readVaultLocation(): VaultLocationScope {
+  const params = new URLSearchParams(window.location.search);
+  const rawId = params.get('vault_id')?.trim() ?? '';
+  return { id: rawId === '' ? null : rawId, explicit: params.has('vault_id') };
+}
+
+/** Возвращает same-origin URL новой вкладки для выбранного хранилища. */
+export function vaultLocationUrl(vaultId: string): string {
+  const url = new URL('/', window.location.origin);
+  url.searchParams.set('vault_id', vaultId);
+  return url.toString();
+}
+
+/** Добавляет область vault к REST, сохраняя config и picker глобальными. */
+function withVaultScope(path: string): string {
+  if (!path.startsWith('/api/') || path === '/api/config' || path === '/api/vaults/open') return path;
+  const vaultId = readVaultLocation().id;
+  return vaultId === null ? path : `/api/vaults/${encodeURIComponent(vaultId)}${path.slice('/api'.length)}`;
+}
 
 /** Ошибка API с машиночитаемым кодом (например 'unauthorized', 'conflict'). */
 export class ApiError extends Error {
@@ -87,7 +119,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   let response: Response;
   try {
-    response = await fetch(path, {
+    response = await fetch(withVaultScope(path), {
       method: options.method ?? 'GET',
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined
@@ -138,8 +170,13 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 // ---------------------------------------------------------------------------
 
 /** GET /api/config — настройки до аутентификации (токен не требуется). */
-export function getConfig(): Promise<ApiConfig> {
-  return request<ApiConfig>('/api/config');
+export function getConfig(): Promise<WebApiConfig> {
+  return request<WebApiConfig>('/api/config');
+}
+
+/** POST /api/vaults/open — системный picker на сервере, без передачи пути из браузера. */
+export function openVaultFolder(): Promise<{ vault: { id: string; name: string } | null }> {
+  return request<{ vault: { id: string; name: string } | null }>('/api/vaults/open', { method: 'POST', body: {} });
 }
 
 /** GET /api/pages — список страниц. */
@@ -253,13 +290,15 @@ export function importMarkdown(body: { title?: string; content: string }): Promi
  * Рендер выполняет серверный playwright-валидатор; при его недоступности —
  * ApiError с пояснением (SVG-скачивание остаётся рабочим).
  */
-export async function downloadBlockPng(pageId: string, blockId: string, filename: string): Promise<void> {
+export async function downloadBlockPng(pageId: string, blockId: string, filename: string, theme?: MermaidTheme): Promise<Blob> {
+  const query = theme === undefined ? '' : `?${new URLSearchParams({ theme })}`;
   const response = await request<Response>(
-    `/api/pages/${encodeURIComponent(pageId)}/blocks/${encodeURIComponent(blockId)}/png`,
+    `/api/pages/${encodeURIComponent(pageId)}/blocks/${encodeURIComponent(blockId)}/png${query}`,
     { raw: true }
   );
   const blob = await response.blob();
   downloadBlob(blob, filename);
+  return blob;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +385,7 @@ export async function searchVault(query: string, tag?: string): Promise<VaultSea
 export function exportPageUrl(pageId: string): string {
   const token = getToken();
   const suffix = token !== null ? `?token=${encodeURIComponent(token)}` : '';
-  return `/api/export/pages/${encodeURIComponent(pageId)}.md${suffix}`;
+  return `${withVaultScope(`/api/export/pages/${encodeURIComponent(pageId)}.md`)}${suffix}`;
 }
 
 /** Скачать страницу в Markdown: fetch + blob + a.download (чтобы работал bearer-токен). */

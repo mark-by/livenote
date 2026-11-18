@@ -1,0 +1,38 @@
+[package]
+name = "livenote"
+version = "0.1.0"
+description = "Локальный визуальный блокнот LiveNote"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+async-stream = "0.3"
+axum = "0.8"
+browser-install = { path = "crates/browser-install" }
+livenote-diagrams = { path = "crates/diagrams" }
+livenote-mcp = { path = "crates/mcp" }
+livenote-vault-service = { path = "crates/vault-service" }
+open = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "sync", "time"] }
+tokio-util = "0.7"
+tower-http = { version = "0.6", features = ["fs"] }
+url = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+let_underscore_must_use = "deny"

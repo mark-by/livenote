@@ -1,6 +1,6 @@
 import { posix } from 'node:path';
 import { fromMarkdown } from 'mdast-util-from-markdown';
-import type { VaultDocument, VaultLink } from '../shared/types.js';
+import type { VaultBacklink, VaultDocument, VaultLink } from '../shared/types.js';
 import { applyEdits, assetDestination, destinationToken, relativeUrl } from './vaultDocument.js';
 
 export interface LinkSpan extends VaultLink { start: number; end: number; fullStart: number; fullEnd: number }
@@ -43,23 +43,48 @@ export function linkSpans(source: string, bodyStart = 0): LinkSpan[] {
   return links.sort((a, b) => a.start - b.start);
 }
 export function resolveLinks(document: VaultDocument, pages: VaultDocument[], bodyStart = 0, paths = pages.map(page => page.path)): LinkSpan[] {
-  const links = linkSpans(document.source, bodyStart);
-  for (const link of links) {
-    if (!link.target) { link.targetPageId = document.path; continue; }
+  return linkResolver(pages, paths)(document.path, linkSpans(document.source, bodyStart));
+}
+
+function linkResolver(pages: readonly VaultDocument[], paths: readonly string[]) {
+  const files = new Set(paths);
+  const names = new Map<string, string | null>();
+  for (const page of pages) for (const name of new Set([page.page.title, ...page.aliases].map(folded))) {
+    names.set(name, names.has(name) ? null : page.path);
+  }
+  return (path: string, links: readonly LinkSpan[]): LinkSpan[] => links.map(link => {
+    if (!link.target) return { ...link, targetPageId: path };
     let relative: string;
-    try { relative = assetDestination(document.path, link.target); } catch { continue; }
+    try { relative = assetDestination(path, link.target); } catch { return { ...link }; }
     let root = relative;
     if (link.kind === 'wiki') {
       try { root = assetDestination('root.md', link.target); } catch { root = relative; }
     }
     const candidates = link.kind === 'wiki' && !posix.extname(relative) ? [relative + '.md', root + '.md'] : [relative];
-    link.targetPageId = candidates.find(path => paths.includes(path)) ?? null;
-    if (!link.targetPageId && link.kind === 'wiki') {
-      const matches = pages.filter(page => [page.page.title, ...page.aliases].some(name => folded(name) === folded(link.target)));
-      if (matches.length === 1) link.targetPageId = matches[0]?.path ?? null;
+    const targetPageId = candidates.find(candidate => files.has(candidate)) ??
+      (link.kind === 'wiki' ? names.get(folded(link.target)) : null) ?? null;
+    return { ...link, targetPageId };
+  });
+}
+
+export function buildLinkGraph(pages: readonly VaultDocument[], paths: readonly string[], spans: ReadonlyMap<string, readonly LinkSpan[]>) {
+  const resolve = linkResolver(pages, paths);
+  const links = new Map<string, LinkSpan[]>();
+  const backlinks = new Map<string, VaultBacklink[]>();
+  const documents = new Set(pages.map(page => page.path));
+  for (const page of pages) {
+    const resolved = resolve(page.path, spans.get(page.path) ?? []);
+    links.set(page.path, resolved);
+    const targets = new Set(resolved.map(link => link.targetPageId));
+    for (const target of targets) {
+      if (!target || target === page.path || !documents.has(target)) continue;
+      const incoming = backlinks.get(target) ?? [];
+      incoming.push({ pageId: page.path, path: page.path, title: page.page.title });
+      backlinks.set(target, incoming);
     }
   }
-  return links;
+  for (const incoming of backlinks.values()) incoming.sort((a, b) => a.path.localeCompare(b.path));
+  return { links, backlinks };
 }
 export function publicLinks(links: LinkSpan[]): VaultLink[] { return links.map(({ target, targetPageId, label, kind, fragment }) => ({ target, targetPageId, label, kind, fragment })); }
 /** Одна таблица перемещений преобразует базы и назначения до записи. */

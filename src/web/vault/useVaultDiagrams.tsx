@@ -31,6 +31,11 @@ interface DiagramControls {
   readonly dialogs: React.ReactNode;
 }
 
+function matchingDiagram(source: string, diagram: EditorDiagram): EditorDiagram | undefined {
+  return parseEditorDiagrams(source).find(item => item.from === diagram.from && item.to === diagram.to
+    && item.format === diagram.format && item.source === diagram.source && item.target === diagram.target && item.label === diagram.label);
+}
+
 export function useVaultDiagrams(workspace: VaultWorkspace, document: VaultDocument, editorRef: React.RefObject<LivePreviewEditorHandle | null>): DiagramControls {
   const [context, setContext] = useState<SessionContext | null>(null);
   const [pickerRange, setPickerRange] = useState<SourceRange | null>(null);
@@ -49,8 +54,7 @@ export function useVaultDiagrams(workspace: VaultWorkspace, document: VaultDocum
     const current = draftRef.current;
     if (!current || current.modalOpen) return;
     if (current.source !== expectedSource) { setLocalError('Документ изменился. Выберите диаграмму снова.'); return; }
-    const match = parseEditorDiagrams(current.source).find((item) => item.from === diagram.from && item.to === diagram.to
-      && item.format === diagram.format && item.source === diagram.source && item.target === diagram.target && item.label === diagram.label);
+    const match = matchingDiagram(current.source, diagram);
     if (!match) { setLocalError('Документ изменился. Выберите диаграмму снова.'); return; }
     editorRef.current?.replaceRange({ from: match.from, to: match.to }, '');
   }, [editorRef]);
@@ -61,20 +65,25 @@ export function useVaultDiagrams(workspace: VaultWorkspace, document: VaultDocum
     if (diagram.target && !asset) return <Alert color="warning"><Alert.Content><Alert.Title>Файл схемы не найден</Alert.Title><Alert.Description>{diagram.target}</Alert.Description></Alert.Content></Alert>;
     const span = document.spans.find((item) => item.from === diagram.from && item.to === diagram.to);
     const open = (mode: 'edit' | 'view'): void => {
-      if (!draft) return;
+      const current = draftRef.current;
+      if (!current || current.modalOpen) return;
+      if (!matchingDiagram(current.source, diagram)) { setLocalError('Документ изменился. Выберите диаграмму снова.'); return; }
       setLocalError(null);
       setContext({
-        session: { value: { format: diagram.format, source, ...(diagram.label ? { title: diagram.label } : {}) }, mode, key: `${pageId}:${draft.epoch}:${diagram.from}:${diagram.to}` },
-        range: { from: diagram.from, to: diagram.to }, draftEpoch: draft.epoch, draftSource: draft.source,
-        originalRangeSource: draft.source.slice(diagram.from, diagram.to),
+        session: { value: { format: diagram.format, source, ...(diagram.label ? { title: diagram.label } : {}) }, mode, key: `${pageId}:${current.epoch}:${diagram.from}:${diagram.to}` },
+        range: { from: diagram.from, to: diagram.to }, draftEpoch: current.epoch, draftSource: current.source,
+        originalRangeSource: current.source.slice(diagram.from, diagram.to),
         ...(asset ? { asset: { path: asset.path, version: asset.version } } : {})
       });
-      workspace.setModalOpen(pageId, true);
+      setModalOpen(pageId, true);
     };
     return <DiagramPreview value={{ format: diagram.format, source, ...(diagram.label ? { title: diagram.label } : {}) }}
-      onExpand={() => open('view')} onEdit={() => open('edit')} onRemove={() => { if (draft) remove(diagram, draft.source); }}
+      onExpand={() => open('view')} onEdit={() => open('edit')} onRemove={() => {
+        const current = draftRef.current;
+        if (current) remove(diagram, current.source);
+      }}
       {...!dirty && span ? { persisted: { pageId, blockId: span.blockId, revision: document.page.revision } } : {}} />;
-  }, [assetFor, dirty, document.page.revision, document.spans, draft?.epoch, pageId, remove, setModalOpen]);
+  }, [assetFor, dirty, document.page.revision, document.spans, pageId, remove, setModalOpen]);
 
   const openCreate = useCallback((format: DiagramFormat, range: SourceRange): void => {
     if (!draft) return;

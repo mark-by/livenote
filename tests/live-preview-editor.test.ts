@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EditorState } from '@codemirror/state';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { EditorView } from '@codemirror/view';
+import { tableExtension } from '../src/web/editor/tableExtension.tsx';
 import { parseEditorDiagrams } from '../src/web/editor/parseDiagrams.ts';
 import { diagramRenderer, diagramSelection } from '../src/web/editor/diagramExtension.ts';
 import { parseEditorLinks } from '../src/web/editor/parseLinks.ts';
@@ -137,4 +140,42 @@ test('Прямой selection Vim перескакивает скрытый ис�
   assert.deepEqual({ anchor: moved.selection.main.anchor, head: moved.selection.main.head }, {
     anchor: 0, head: to
   });
+});
+
+test('Правка исходника обновляет общие определения и диапазоны ссылок, таблицы и диаграммы', () => {
+  // Arrange: определение вне таблицы задаёт цель ссылки и файла диаграммы.
+  const link = '[Схема][ref]';
+  const embed = '![Превью][ref]';
+  const table = `| A | B |\n| --- | --- |\n| ${link} | два |`;
+  const source = `До\n\n${table}\n\n${embed}\n\n[ref]: ./old.bpmn`;
+  const state = EditorState.create({ doc: source, extensions: [markdown({ base: markdownLanguage }), tableExtension] });
+  parseEditorLinks(state.doc);
+  parseEditorDiagrams(state.doc);
+  const prefix = '📝 ';
+
+  // Act: одна транзакция сдвигает диапазоны и меняет цель ссылки.
+  const updated = state.update({ changes: [
+    { from: 0, insert: prefix },
+    { from: source.indexOf('./old.bpmn'), to: source.length, insert: './new.drawio' }
+  ] }).state;
+
+  // Assert: потребители используют новый текст и координаты UTF-16.
+  const linkFrom = source.indexOf(link) + prefix.length;
+  const embedFrom = source.indexOf(embed) + prefix.length;
+  const tableFrom = source.indexOf(table) + prefix.length;
+  assert.deepEqual(parseEditorLinks(updated.doc), [{
+    from: linkFrom, to: linkFrom + link.length, target: './new.drawio',
+    label: 'Схема', labelFrom: linkFrom + 1, labelTo: linkFrom + 6, wiki: false
+  }]);
+  assert.deepEqual(parseEditorDiagrams(updated.doc), [{
+    from: embedFrom, to: embedFrom + embed.length, format: 'drawio', source: '',
+    target: './new.drawio', label: 'Превью'
+  }]);
+  const tableRanges: { from: number; to: number }[] = [];
+  for (const decorations of updated.facet(EditorView.decorations)) {
+    if (typeof decorations !== 'function') decorations.between(0, updated.doc.length, (from, to) => {
+      tableRanges.push({ from, to });
+    });
+  }
+  assert.deepEqual(tableRanges, [{ from: tableFrom, to: tableFrom + table.length }]);
 });

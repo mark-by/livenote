@@ -21,6 +21,7 @@ import type Canvas from 'diagram-js/lib/core/Canvas';
 import type { Block } from '../../shared/types';
 import { confirmRendered } from '../api';
 import { downloadDiagramSvg, downloadTextFile } from '../svgDownload';
+import { notifyDiagramDownload } from '../diagrams/diagramDownload';
 import { CopyButton } from './CopyButton';
 import { ArrowDownToLine, ArrowsExpand, MagnifierPlus, MagnifierMinus } from '@gravity-ui/icons';
 import { DiagramAction } from '../diagrams/DiagramAction';
@@ -148,14 +149,11 @@ export function BpmnBlockView({ block, pageRevision, onExpand, persisted = true 
     if (!viewer) {
       return;
     }
-    void viewer
-      .saveSVG()
-      .then(({ svg }) => {
-        downloadDiagramSvg(svg, `${block.id}.svg`);
-      })
-      .catch((saveError: unknown) => {
-        console.error('Не удалось сохранить BPMN-схему в SVG:', saveError);
-      });
+    const filename = `${block.id}.svg`;
+    void notifyDiagramDownload(filename, async () => {
+      const { svg } = await viewer.saveSVG();
+      return downloadDiagramSvg(svg, filename);
+    });
   };
 
   // Бейдж «предыдущая версия», если сервер знает, что последняя ревизия не отображалась.
@@ -175,7 +173,10 @@ export function BpmnBlockView({ block, pageRevision, onExpand, persisted = true 
           <DiagramAction label="Отдалить BPMN-схему" icon={MagnifierMinus} onPress={() => zoomBy(0.8)} className="bpmn-controls__btn" />
           <DiagramAction label="Сбросить масштаб BPMN-схемы" icon={ArrowsExpand} onPress={zoomToFit} className="bpmn-controls__btn" />
           <Button variant="ghost" size="sm" aria-label="Скачать BPMN XML"
-            onPress={() => downloadTextFile(block.source, `${block.id}.bpmn`, 'application/xml')}>XML</Button>
+            onPress={() => {
+              const filename = `${block.id}.bpmn`;
+              void notifyDiagramDownload(filename, () => downloadTextFile(block.source, filename, 'application/xml'));
+            }}>XML</Button>
         </div>
       </div>
 

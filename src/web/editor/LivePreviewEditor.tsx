@@ -2,14 +2,32 @@ import { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Compartment, EditorState, Transaction } from '@codemirror/state';
 import { drawSelection, EditorView, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { markdown, markdownKeymap } from '@codemirror/lang-markdown';
+import { markdown, markdownKeymap, markdownLanguage } from '@codemirror/lang-markdown';
+import { LanguageDescription, syntaxHighlighting } from '@codemirror/language';
+import { languages } from '@codemirror/language-data';
+import { classHighlighter } from '@lezer/highlight';
 import { vim, getCM } from '@replit/codemirror-vim';
 import { markdownDecorations } from './markdownDecorations';
 import { diagramField, diagramRenderer, diagramSelection } from './diagramExtension';
 import { parseEditorDiagrams } from './parseDiagrams';
 import { parseEditorLinks } from './parseLinks';
+import { tableExtension, tableLinkHandler } from './tableExtension';
 import type { EditorVimMode, LivePreviewEditorProps } from './types';
 import './livePreview.css';
+
+const codeLanguageAliases = new Map([
+  ['golang', 'go'],
+  ['jsonc', 'json'],
+  ['zsh', 'sh'],
+]);
+
+function codeLanguage(info: string): LanguageDescription | null {
+  const name = info.trim().toLowerCase().split(/\s+/, 1)[0];
+  if (!name) return null;
+  const alias = codeLanguageAliases.get(name) ?? name;
+  return LanguageDescription.matchLanguageName(languages, alias, false) ??
+    LanguageDescription.matchFilename(languages, `code.${alias}`);
+}
 
 export function LivePreviewEditor(props: LivePreviewEditorProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -26,6 +44,9 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
 
   useImperativeHandle(props.ref, () => ({
     focus: () => view.current?.focus(),
+    revealPosition(position) {
+      view.current?.dispatch({ effects: EditorView.scrollIntoView(position, { y: 'center' }) });
+    },
     getSelection() {
       const selection = view.current?.state.selection.main;
       return { from: selection?.from ?? 0, to: selection?.to ?? 0 };
@@ -54,11 +75,14 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
           history(),
           drawSelection(),
           EditorView.lineWrapping,
-          markdown(),
+          markdown({ base: markdownLanguage, codeLanguages: codeLanguage }),
+          syntaxHighlighting(classHighlighter),
           markdownDecorations,
+          tableExtension,
+          tableLinkHandler.of(target => current.current.onOpenLink?.(target)),
           diagramField,
           diagramSelection,
-          compartments.diagrams.of([]),
+          compartments.diagrams.of(diagramRenderer.of(current.current.renderDiagram)),
           compartments.theme.of([]),
           compartments.readOnly.of([]),
           EditorView.contentAttributes.of({ 'aria-label': current.current.ariaLabel ?? 'Текст заметки' }),
@@ -68,7 +92,7 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
               const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
               const callback = current.current.onOpenLink;
               if (position === null || !callback) return false;
-              const link = parseEditorLinks(editor.state.doc.toString())
+              const link = parseEditorLinks(editor.state.doc)
                 .find(range => position >= range.from && position <= range.to);
               if (!link) return false;
               callback(link.target);
@@ -81,7 +105,7 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
               const callback = current.current.onOpenLink;
               if (!callback) return false;
               const position = editor.state.selection.main.head;
-              const link = parseEditorLinks(editor.state.doc.toString())
+              const link = parseEditorLinks(editor.state.doc)
                 .find(range => position >= range.from && position <= range.to);
               if (!link) return false;
               callback(link.target);
@@ -126,7 +150,9 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
   }, [props.source]);
 
   useEffect(() => {
-    view.current?.dispatch({
+    const editor = view.current;
+    if (!editor || editor.state.facet(diagramRenderer) === props.renderDiagram) return;
+    editor.dispatch({
       effects: compartments.diagrams.reconfigure(diagramRenderer.of(props.renderDiagram))
     });
   }, [props.renderDiagram, compartments]);
@@ -177,8 +203,8 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
       const widget = target instanceof Element ? target.closest<HTMLElement>('.lp-diagram') : null;
       const position = widget ? Number(widget.dataset.from) :
         editor.posAtCoords({ x: event.clientX, y: event.clientY }) ?? editor.state.doc.length;
-      const diagram = parseEditorDiagrams(editor.state.doc.toString())
-        .find(range => position >= range.from && position < range.to);
+      const diagram = widget ? parseEditorDiagrams(editor.state.doc)
+        .find(range => range.from === position && range.to === Number(widget.dataset.to)) : undefined;
       callback({
         from: diagram?.from ?? position, to: diagram?.to ?? position,
         clientX: event.clientX, clientY: event.clientY,

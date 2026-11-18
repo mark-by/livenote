@@ -134,10 +134,11 @@ export class PlaywrightValidator implements DiagramValidator {
     }).catch(() => UNAVAILABLE);
   }
 
-  async render(source: string, options?: { includeImage?: boolean }): Promise<RenderOutcome> {
+  async render(source: string, options?: { includeImage?: boolean; theme?: MermaidTheme }): Promise<RenderOutcome> {
     const includeImage = options?.includeImage === true;
+    const theme = options?.theme ?? this.mermaidTheme;
     return this.exclusive(async () => {
-      const key = sha256(['render', source, includeImage ? 'png' : 'svg']);
+      const key = sha256(['render', source, includeImage ? 'png' : 'svg', theme]);
       const cached = this.renderCache.get(key);
       if (cached !== undefined) return cached;
       try {
@@ -148,7 +149,7 @@ export class PlaywrightValidator implements DiagramValidator {
           this.renderCache.set(key, failed);
           return failed;
         }
-        const outcome = await this.renderViaBrowser(source, includeImage, validation);
+        const outcome = await this.renderViaBrowser(source, includeImage, validation, theme);
         this.renderCache.set(key, outcome);
         return outcome;
       } catch {
@@ -177,8 +178,8 @@ export class PlaywrightValidator implements DiagramValidator {
   }
 
   /** render через браузер; PNG некритичен — при сбое скриншота отдаём результат без него. */
-  private async renderViaBrowser(source: string, includeImage: boolean, validation: DiagramValidation): Promise<RenderOutcome> {
-    const drawn = await this.attempt('render', (page) => this.evaluateRender(page, source));
+  private async renderViaBrowser(source: string, includeImage: boolean, validation: DiagramValidation, theme: MermaidTheme): Promise<RenderOutcome> {
+    const drawn = await this.attempt('render', (page) => this.evaluateRender(page, source, theme));
     const pngBase64 = includeImage
       ? await this.attempt('screenshot', (page) => this.screenshot(page, drawn.svg)).catch(() => undefined)
       : undefined;
@@ -237,7 +238,11 @@ export class PlaywrightValidator implements DiagramValidator {
     if (!existsSync(path)) throw new Error(`UMD-бандл mermaid не найден: ${path}`);
     await page.setContent(BASE_HTML);
     await page.addScriptTag({ path });
-    await page.evaluate(() => {
+    await this.initializeTheme(page, this.mermaidTheme);
+  }
+
+  private async initializeTheme(page: Page, theme: MermaidTheme): Promise<void> {
+    await page.evaluate((activeTheme) => {
       const mermaid = (globalThis as { mermaid?: BrowserMermaid }).mermaid;
       if (mermaid === undefined) throw new Error('UMD-скрипт mermaid не определил глобал');
       // suppressErrorRendering — опция конфига (третий аргумент render — это контейнер,
@@ -247,11 +252,11 @@ export class PlaywrightValidator implements DiagramValidator {
       mermaid.initialize({
         startOnLoad: false,
         securityLevel: 'strict',
-        theme: this.mermaidTheme,
+        theme: activeTheme,
         suppressErrorRendering: true,
         elk: { straightenEdges: false }
       });
-    });
+    }, theme);
   }
 
   /** Проверка, что глобал mermaid доступен (после setContent для скриншота его нет). */
@@ -287,7 +292,8 @@ export class PlaywrightValidator implements DiagramValidator {
   }
 
   /** mermaid.render в браузере + числовые размеры svg (атрибуты width/height, иначе viewBox). */
-  private evaluateRender(page: Page, source: string): Promise<BrowserRenderOutcome> {
+  private async evaluateRender(page: Page, source: string, theme: MermaidTheme): Promise<BrowserRenderOutcome> {
+    await this.initializeTheme(page, theme);
     return page.evaluate(async (src): Promise<BrowserRenderOutcome> => {
       const mermaid = (globalThis as { mermaid?: BrowserMermaid }).mermaid;
       if (mermaid === undefined) throw new Error('mermaid не загружен в странице');

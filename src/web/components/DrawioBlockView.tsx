@@ -7,6 +7,7 @@ import { CopyButton } from './CopyButton';
 import { useDrawioFrame } from './useDrawioFrame';
 import { ArrowsExpand, MagnifierPlus, MagnifierMinus } from '@gravity-ui/icons';
 import { DiagramAction } from '../diagrams/DiagramAction';
+import { notifyDiagramDownload } from '../diagrams/diagramDownload';
 
 export const EMPTY_DRAWIO_XML =
   '<mxfile><diagram id="livenote" name="Страница 1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
@@ -26,7 +27,7 @@ export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand, pers
   const [exportError, setExportError] = useState<string | null>(null);
   const { iframeRef, ready, error, exportDiagram } = useDrawioFrame({
     xml: block.source,
-    frameKey: `${block.id}:${block.source}`,
+    frameKey: block.source,
     backgroundPreview: true
   });
 
@@ -60,11 +61,8 @@ export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand, pers
   }, [svgUrl]);
 
   const downloadPng = (): void => {
-    setExportError(null);
-    void downloadBlockPng(block.pageId, block.id, diagramFilename(pageTitle, block.id, 'png'))
-      .catch((downloadError: unknown) => {
-        setExportError(downloadError instanceof Error ? downloadError.message : String(downloadError));
-      });
+    const filename = diagramFilename(pageTitle, block.id, 'png');
+    void notifyDiagramDownload(filename, () => downloadBlockPng(block.pageId, block.id, filename));
   };
 
   const failure = error ?? exportError;
@@ -100,9 +98,15 @@ export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand, pers
           <DiagramAction label="Сбросить масштаб draw.io-схемы" icon={ArrowsExpand} className="drawio-controls__btn"
             disabled={!svgUrl} onPress={() => setScale(1)} />
           <Button variant="ghost" size="sm" className="drawio-controls__btn" aria-label="Скачать draw.io XML"
-            onPress={() => downloadTextFile(block.source, diagramFilename(pageTitle, block.id, 'drawio'), 'application/xml')}>XML</Button>
+            onPress={() => {
+              const filename = diagramFilename(pageTitle, block.id, 'drawio');
+              void notifyDiagramDownload(filename, () => downloadTextFile(block.source, filename, 'application/xml'));
+            }}>XML</Button>
           <Button variant="ghost" size="sm" className="drawio-controls__btn" aria-label="Скачать SVG" isDisabled={!svgRef.current}
-            onPress={() => downloadDiagramSvg(svgRef.current, diagramFilename(pageTitle, block.id, 'svg'))}>SVG</Button>
+            onPress={() => {
+              const filename = diagramFilename(pageTitle, block.id, 'svg');
+              void notifyDiagramDownload(filename, () => downloadDiagramSvg(svgRef.current, filename));
+            }}>SVG</Button>
           {persisted && <Button variant="ghost" size="sm" className="drawio-controls__btn" aria-label="Скачать PNG" onPress={downloadPng}>PNG</Button>}
         </div>
       </div>

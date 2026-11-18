@@ -5,6 +5,7 @@ import { downloadDiagramSvg, downloadTextFile } from '../svgDownload';
 import { useConfirm } from '../components/ConfirmDialog';
 import { BpmnBlockView } from '../components/BpmnBlockView';
 import { DiagramAction } from './DiagramAction';
+import { notifyDiagramDownload } from './diagramDownload';
 import { useBpmnModeler } from './useBpmnModeler';
 import { snapshotBlock } from './snapshotBlock';
 import type { DiagramDialogProps } from './types';
@@ -50,21 +51,26 @@ export function BpmnDiagramDialog({ session, onSave, onCancel }: DiagramDialogPr
 
   const exportDiagram = async (format: 'xml' | 'svg' | 'copy'): Promise<void> => {
     editor.setError(null);
-    try {
-      switch (format) {
-        case 'copy': await navigator.clipboard.writeText(await editor.xml()); break;
-        case 'xml': downloadTextFile(await editor.xml(), `${filename}.bpmn`, 'application/xml'); break;
-        case 'svg': {
-          await editor.xml();
-          const result = await editor.modelerRef.current?.saveSVG();
-          if (result) downloadDiagramSvg(result.svg, `${filename}.svg`);
-          break;
-        }
-        default: assertNever(format);
+    if (format === 'copy') {
+      try {
+        await navigator.clipboard.writeText(await editor.xml());
+      } catch (failure) {
+        editor.setError(failure instanceof Error ? failure.message : String(failure));
       }
-    } catch (failure) {
-      editor.setError(failure instanceof Error ? failure.message : String(failure));
+      return;
     }
+    const downloadName = `${filename}.${format === 'xml' ? 'bpmn' : 'svg'}`;
+    await notifyDiagramDownload(downloadName, async () => {
+      const xml = await editor.xml();
+      if (format === 'xml') {
+        downloadTextFile(xml, downloadName, 'application/xml');
+        return;
+      }
+      const modeler = editor.modelerRef.current;
+      if (!modeler) throw new Error('Редактор BPMN не готов');
+      const { svg } = await modeler.saveSVG();
+      return downloadDiagramSvg(svg, downloadName);
+    });
   };
 
   return <>
@@ -118,8 +124,4 @@ export function BpmnDiagramDialog({ session, onSave, onCancel }: DiagramDialogPr
     </Modal.Backdrop>
     {dialog}
   </>;
-}
-
-function assertNever(value: never): never {
-  throw new TypeError(`Неизвестный экспорт: ${String(value)}`);
 }

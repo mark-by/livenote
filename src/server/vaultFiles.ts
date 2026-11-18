@@ -1,19 +1,33 @@
 // allow: SIZE_OK — неделимый файловый journal writer/recovery использует одну проверку containment и no-follow.
 import {
   closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync,
-  readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync
+  readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync,
+  type BigIntStats
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { VaultProblem } from '../shared/types.js';
 import { AppError, InvalidRequestError } from './errors.js';
 import { DocumentProblem, sha256 } from './vaultDocument.js';
+import { ignoredPath, ignoreFile, parseIgnoredDirectories } from './vaultIgnore.js';
 
 interface Change { path: string; old: string | null; next: string | null; oldHash: string | null; newHash: string | null }
 export interface DirectoryChange { path: string; old: boolean; next: boolean }
 interface PathRename { from: string; to: string }
 interface Journal { id: string; changes: Change[]; directories?: DirectoryChange[]; rename?: PathRename }
 export interface FileWrite { path: string; source: string | Buffer | null; expected: string | Buffer | null }
+
+export function fileStamp(stat: BigIntStats): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.birthtimeNs}`;
+}
+
+export function decodeVaultText(bytes: Buffer): string {
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+  catch (error) {
+    if (error instanceof TypeError) throw new DocumentProblem('unreadable_file', 'Файл не является UTF-8');
+    throw error;
+  }
+}
 
 export function validateVaultPath(path: string): void {
   if (typeof path !== 'string' || !path || /[\0\\]/.test(path) || /^(?:\/|[a-zA-Z]:)/.test(path) ||
@@ -33,6 +47,9 @@ export class VaultFiles {
   private rootIdentity: { dev: number; ino: number };
   private lockIdentity: string;
   private closed = false;
+  private ignoreRules: ReadonlySet<string> = new Set();
+  private ignoreStamp: string | null = null;
+  private ignoreProblem?: VaultProblem;
 
   constructor(root: string) {
     const requested = resolve(root);
@@ -107,26 +124,30 @@ export class VaultFiles {
     }
   }
 
-  readBytes(path: string): { bytes: Buffer; mtimeMs: number; birthtimeMs: number } {
+  stamp(path: string): string {
+    const stat = lstatSync(this.absolute(path), { bigint: true });
+    if (!stat.isFile()) throw new DocumentProblem('unsafe_path', 'Ожидался обычный файл');
+    return fileStamp(stat);
+  }
+
+  readBytes(path: string): { bytes: Buffer; mtimeMs: number; birthtimeMs: number; stamp: string } {
     const absolute = this.absolute(path);
-    const fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const before = fstatSync(fd);
+      const before = fstatSync(fd, { bigint: true });
       if (!before.isFile()) throw new DocumentProblem('unsafe_path', 'Ожидался обычный файл');
       const bytes = readFileSync(fd);
-      const after = fstatSync(fd);
-      const current = lstatSync(this.absolute(path));
-      if (current.ino !== before.ino || current.dev !== before.dev || after.size !== before.size ||
-          after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) {
+      const stamp = fileStamp(before);
+      const after = fstatSync(fd, { bigint: true });
+      if (fileStamp(after) !== stamp || this.stamp(path) !== stamp) {
         throw new DocumentProblem('unreadable_file', 'Файл изменился во время чтения');
       }
-      return { bytes, mtimeMs: after.mtimeMs, birthtimeMs: after.birthtimeMs };
+      return { bytes, stamp, mtimeMs: Number(after.mtimeNs) / 1e6, birthtimeMs: Number(after.birthtimeNs) / 1e6 };
     } finally { closeSync(fd); }
   }
   read(path: string): { source: string; mtimeMs: number; birthtimeMs: number } {
-    const result = this.readBytes(path);
-    try { return { source: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(result.bytes), mtimeMs: result.mtimeMs, birthtimeMs: result.birthtimeMs }; }
-    catch { throw new DocumentProblem('unreadable_file', 'Файл не является UTF-8'); }
+    const { bytes, mtimeMs, birthtimeMs } = this.readBytes(path);
+    return { source: decodeVaultText(bytes), mtimeMs, birthtimeMs };
   }
   optionalBytes(path: string): Buffer | null {
     try { return this.readBytes(path).bytes; } catch (error) {
@@ -142,10 +163,64 @@ export class VaultFiles {
     }
   }
 
-  list(directory = '', includeOperational = false): { files: string[]; folders: string[]; problems: VaultProblem[] } {
+  private refreshIgnore(): void {
+    let bytes: Buffer;
+    try {
+      const stamp = this.stamp(ignoreFile);
+      if (stamp === this.ignoreStamp) return;
+      const read = this.readBytes(ignoreFile);
+      this.ignoreStamp = read.stamp;
+      bytes = read.bytes;
+    } catch (error) {
+      this.ignoreStamp = null;
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        if (this.ignoreRules.size) this.ignoreRules = new Set();
+        this.ignoreProblem = undefined;
+      } else if (error instanceof Error && 'code' in error) {
+        this.ignoreProblem = { path: ignoreFile, code: 'unreadable_file', message: 'Не удалось прочитать .livenoteignore' };
+      } else throw error;
+      return;
+    }
+    try {
+      this.ignoreRules = parseIgnoredDirectories(decodeVaultText(bytes));
+      this.ignoreProblem = undefined;
+    } catch (error) {
+      if (!(error instanceof DocumentProblem)) throw error;
+      this.ignoreProblem = { path: ignoreFile, code: error.code, message: error.message };
+    }
+  }
+
+  assertAuthorable(entries: Iterable<{ readonly path: string; readonly directory: boolean }>): void {
+    this.refreshIgnore();
+    if (this.ignoreProblem) throw new InvalidRequestError(this.ignoreProblem.message);
+    for (const { path, directory } of entries) {
+      const parts = path.normalize('NFC').split('/');
+      if (parts[0]?.toLowerCase() === ignoreFile || ignoredPath(this.ignoreRules, path, directory)) {
+        throw new InvalidRequestError('Запись в скрытый или служебный путь запрещена', { path });
+      }
+      if (!directory) parts.pop();
+      const parent = parts.join('/');
+      for (const rule of this.ignoreRules) {
+        const prefix = parent.slice(0, rule.length);
+        if (prefix.toLowerCase() !== rule.toLowerCase() || (parent.length !== rule.length && parent[rule.length] !== '/')) continue;
+        // На файловой системе без учёта регистра другой регистр может указывать на скрытый каталог.
+        const candidate = lstatSync(this.absolute(prefix), { bigint: true, throwIfNoEntry: false });
+        const hidden = lstatSync(this.absolute(rule), { bigint: true, throwIfNoEntry: false });
+        if (candidate?.isDirectory() && hidden?.isDirectory() && candidate.dev === hidden.dev && candidate.ino === hidden.ino) {
+          throw new InvalidRequestError('Запись в скрытый каталог запрещена', { path });
+        }
+      }
+    }
+  }
+
+  list(directory = '', includeOperational = false) {
+    if (!includeOperational) this.refreshIgnore();
+    const rules = this.ignoreRules;
     const files: string[] = [];
     const folders: string[] = [directory];
-    const problems: VaultProblem[] = [];
+    const ignoredFolders: string[] = [];
+    const hiddenEntries: string[] = [];
+    const problems: VaultProblem[] = !includeOperational && this.ignoreProblem ? [this.ignoreProblem] : [];
     const walk = (path: string): void => {
       let entries;
       try { this.checkRoot(); entries = readdirSync(path ? this.absolute(path) : this.root, { withFileTypes: true }); }
@@ -155,14 +230,22 @@ export class VaultFiles {
       }
       for (const entry of entries) {
         const child = path ? path + '/' + entry.name : entry.name;
-        if (!includeOperational && ['.git', '.livenote'].includes(entry.name)) continue;
+        if (!includeOperational) {
+          if (child === ignoreFile) continue;
+          if (['.git', '.livenote'].includes(entry.name)) { hiddenEntries.push(child); continue; }
+          if (entry.isDirectory() && ignoredPath(rules, child, true)) {
+            ignoredFolders.push(child);
+            hiddenEntries.push(child);
+            continue;
+          }
+        }
         if (entry.isSymbolicLink()) { problems.push({ code: 'unsafe_path', path: child, message: 'Символическая ссылка запрещена' }); continue; }
         if (entry.isDirectory()) { folders.push(child); walk(child); }
         else if (entry.isFile()) files.push(child);
       }
     };
     walk(directory);
-    return { files: files.sort(), folders: folders.sort(), problems };
+    return { files: files.sort(), folders: folders.sort(), problems, ignoredFolders, hiddenEntries, rules };
   }
 
   private syncDirectory(path: string): void {
@@ -183,6 +266,26 @@ export class VaultFiles {
 
   /** Журнал содержит старые/новые байты, fsync предшествует первой публикации. */
   commit(writes: FileWrite[], directories: DirectoryChange[] = [], rename?: PathRename): boolean {
+    const targets = [
+      ...writes.filter(write => !write.path.startsWith('.livenote/requests/')).map(write => ({ path: write.path, directory: false })),
+      ...directories.map(entry => ({ path: entry.path, directory: true })),
+    ];
+    const removed = new Set(directories.filter(entry => !entry.next).map(entry => entry.path));
+    for (const path of removed) {
+      if (removed.has(dirname(path))) continue;
+      const scan = this.list(path);
+      if (scan.hiddenEntries.length || scan.problems.length) throw new InvalidRequestError('Папка содержит скрытые или недоступные пути', { path });
+    }
+    if (rename) {
+      const directory = lstatSync(this.absolute(rename.from)).isDirectory();
+      targets.push({ path: rename.from, directory }, { path: rename.to, directory });
+      if (directory) {
+        const scan = this.list(rename.from);
+        if (scan.hiddenEntries.length || scan.problems.length) throw new InvalidRequestError('Папка содержит скрытые или недоступные пути');
+        targets.push(...scan.folders.map(path => ({ path: rename.to + path.slice(rename.from.length), directory: true })));
+      }
+    }
+    if (targets.length) this.assertAuthorable(targets);
     const changes: Change[] = [];
     for (const write of writes) {
       const originalPath = rename && (write.path === rename.to || write.path.startsWith(rename.to + '/')) ? rename.from + write.path.slice(rename.to.length) : write.path;

@@ -7,9 +7,7 @@
  * строгому XML: mermaid собирает SVG HTML-сериализацией, и void-теги внутри
  * foreignObject (<br> в многострочных метках) остаются незакрытыми — скачанный
  * файл браузер открывает XML-парсером и падает с "tag mismatch".
- * PNG-экспорт живёт на сервере (rest.ts: .../png — playwright-скриншот с
- * omitBackground): клиентский canvas-путь невозможен — SVG с foreignObject
- * «портит» canvas (tainted) и toBlob запрещён.
+ * Для скачивания PNG сервер использует снимок диаграммы в Chromium.
  */
 
 /**
@@ -39,8 +37,10 @@ function saveBlob(blob: Blob, filename: string): void {
 }
 
 /** Скачать SVG-диаграмму файлом (Blob + a.download, как downloadBlob в api.ts). */
-export function downloadDiagramSvg(svg: string, filename: string): void {
-  saveBlob(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
+export function downloadDiagramSvg(svg: string, filename: string): Blob {
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  saveBlob(blob, filename);
+  return blob;
 }
 
 /** Скачать текстовый файл (например, BPMN XML) с заданным MIME-типом. */
@@ -57,7 +57,7 @@ export function downloadTextFile(content: string, filename: string, mime: string
 export function diagramFilename(
   pageTitle: string | undefined,
   blockId: string,
-  ext: 'svg' | 'png' | 'bpmn' | 'drawio' = 'svg'
+  ext: 'svg' | 'png' | 'bpmn' | 'drawio' | 'mmd' = 'svg'
 ): string {
   const slug = (pageTitle ?? '')
     .toLowerCase()

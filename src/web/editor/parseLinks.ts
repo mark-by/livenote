@@ -1,4 +1,5 @@
-import { markdownNodes } from './markdownNodes';
+import type { Text } from '@codemirror/state';
+import { markdownDocument } from './markdownNodes';
 import type { SourceRange } from './types';
 
 export type EditorLink = SourceRange & {
@@ -9,12 +10,19 @@ export type EditorLink = SourceRange & {
   readonly wiki: boolean;
 };
 
-export function parseEditorLinks(source: string): readonly EditorLink[] {
-  const nodes = markdownNodes(source);
-  const definitions = new Map<string, string>();
-  for (const { node } of nodes) {
-    if (node.type === 'definition') definitions.set(node.identifier.toUpperCase(), node.url);
-  }
+const linksByDoc = new WeakMap<Text, readonly EditorLink[]>();
+
+export function parseEditorLinks(doc: Text | string): readonly EditorLink[] {
+  if (typeof doc === 'string') return collectLinks(doc);
+  const cached = linksByDoc.get(doc);
+  if (cached) return cached;
+  const links = collectLinks(doc);
+  linksByDoc.set(doc, links);
+  return links;
+}
+
+function collectLinks(doc: Text | string): readonly EditorLink[] {
+  const { source, nodes, definitions } = markdownDocument(doc);
   const links: EditorLink[] = [];
   const excluded: SourceRange[] = [];
   for (const { node, from, to } of nodes) {

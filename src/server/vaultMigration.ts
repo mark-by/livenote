@@ -86,18 +86,23 @@ export function migrateVault(dbPath: string, targetPath: string): MigrationResul
       page, blocks: z.array(blockSchema).parse(copyDb.prepare('SELECT * FROM blocks WHERE page_id = ? ORDER BY position, created_at').all(page.id))
     }))).deferred();
     const files: NativeFile[] = []; const used = new Set<string>(); const mapping = new Map<string, string>();
-    for (const { page } of snapshot) mapping.set(page.id, unique(safeTitle(page.title) + '.md', used));
+    for (const { page } of snapshot) if (!page.deleted_at) mapping.set(page.id, unique(safeTitle(page.title) + '.md', used));
     let pages = 0; let deletedPages = 0;
     const records: unknown[] = [];
     for (const { page, blocks } of snapshot) {
+      if (page.deleted_at) {
+        records.push({ ...page, path: null, blocks });
+        deletedPages++;
+        continue;
+      }
       const path = mapping.get(page.id);
       if (!path) throw new InvalidRequestError('Отсутствует путь миграции');
-      const prefix = page.deleted_at ? '.livenote/trash/migration/' : ''; const parts: string[] = [];
+      const parts: string[] = [];
       for (const [index, block] of blocks.entries()) {
         let assetPath: string | undefined;
         if (block.type === 'bpmn' || block.type === 'drawio') {
           assetPath = unique(`Схемы/${safeTitle(page.title)} — ${safeTitle(block.title || block.type + ' ' + (index + 1))}.${block.type}`, used);
-          files.push({ path: prefix + assetPath, source: block.source });
+          files.push({ path: assetPath, source: block.source });
         }
         let content = blockContent(block.type, block.source, '\n', assetPath ? relativeUrl(path, assetPath) : undefined, block.title);
         if (block.type === 'mermaid' && block.title) content = '## ' + block.title + '\n' + content;
@@ -105,9 +110,9 @@ export function migrateVault(dbPath: string, targetPath: string): MigrationResul
       }
       let source = parts.join('\n\n');
       source = rewriteMigrationLinks(source, path, mapping, new Map(), path);
-      files.push({ path: prefix + path, source });
-      records.push({ ...page, path: prefix + path, blocks });
-      if (page.deleted_at) deletedPages++; else pages++;
+      files.push({ path, source });
+      records.push({ ...page, path, blocks });
+      pages++;
     }
     const archive = sourcePaths.flatMap((path, i) => {
       const source = originals.get(path);
@@ -180,17 +185,7 @@ export function migrateFromVault(sourcePath: string, targetPath: string): Migrat
       const to = old.startsWith('_assets/') ? unique(`Схемы/${safeTitle(parsed.title ?? basename(path, '.md'))} — ${safeTitle(asset.title || 'Диаграмма ' + (index + 1))}${ext}`, used) : unique(old, used);
       mapping.set(old, to);
     }
-    let deletedPages = 0;
-    for (const [path, bytes] of original) if (path.startsWith('.livenote/trash/') && path.endsWith('.md')) {
-      const parsed = legacyDocument(bytes.toString('utf8'));
-      const to = unique('.livenote/trash/migration/' + safeTitle(parsed.title ?? basename(path, '.md')) + '.md', used);
-      mapping.set(path, to); notes.set(path, parsed); deletedPages++;
-      for (const [index, asset] of parsed.assets.entries()) {
-        const old = migrationDestination(path, asset.target);
-        if (!original.has(old)) throw new InvalidRequestError('Диаграмма удалённой заметки отсутствует', { path: old });
-        if (!mapping.has(old)) mapping.set(old, unique('.livenote/trash/migration/Схемы/' + safeTitle(parsed.title ?? 'Удалённая заметка') + ' — ' + safeTitle(asset.title ?? 'Диаграмма ' + (index + 1)) + posix.extname(old), used));
-      }
-    }
+    const deletedPages = [...original.keys()].filter(path => path.startsWith('.livenote/trash/') && path.endsWith('.md')).length;
     for (const path of original.keys()) if (!path.startsWith('.livenote/') && !path.startsWith('.git/') && !mapping.has(path)) {
       const readable = path.startsWith('_assets/') && diagramFormat(path) ? 'Схемы/Архив — Диаграмма ' + (mapping.size + 1) + posix.extname(path) : path;
       mapping.set(path, unique(readable, used));
@@ -207,6 +202,6 @@ export function migrateFromVault(sourcePath: string, targetPath: string): Migrat
     writeMigration(staged, files, archive, { source: 'vault', paths: [...mapping].map(([from, to]) => ({ from, to })), checksums: [...original].map(([path, source]) => ({ path, version: fileVersion(source) })) }, retainedFolders);
     const before = new Map([...original].map(([path, bytes]) => [join(sourceRoot, path), bytes]));
     unchanged([...before.keys()], before);
-    publish(staged, target); return { pages: notes.size - deletedPages, deletedPages, warning };
+    publish(staged, target); return { pages: notes.size, deletedPages, warning };
   } finally { if (existsSync(staged)) rmSync(staged, { recursive: true, force: true }); }
 }

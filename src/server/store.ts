@@ -8,7 +8,7 @@ export interface PageStore {
   getPage(pageId: string): PageFull | undefined;
   createPage(title: string): PageFull;
   createPageWithBlocks(title: string, blocks: NewBlock[]): PageFull;
-  softDeletePage(pageId: string, expectedRevision: number): void;
+  deletePage(pageId: string, expectedRevision: number): void;
   updatePage(pageId: string, patch: UpdatePagePatch, expectedRevision: number): PageFull;
   upsertBlock(pageId: string, blockId: string, type: BlockType, source: string, expectedRevision: number, title?: string | null): { page: PageFull; created: boolean };
   deleteBlock(pageId: string, blockId: string, expectedRevision: number): PageFull;

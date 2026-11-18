@@ -64,12 +64,10 @@ export function SettingsDialog(props: SettingsDialogProps): React.JSX.Element {
                 </ListBox></Select.Popover>
               </Select>
               <Switch isSelected={props.vimEnabled ?? false} onChange={props.onVimEnabledChange}>
-                <Switch.Control><Switch.Thumb /></Switch.Control>
-                <Switch.Content><Label>Vim mode</Label></Switch.Content>
+                <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control><Label>Vim mode</Label></Switch.Content>
               </Switch>
               <Switch isSelected={props.followEvents} onChange={props.onFollowChange}>
-                <Switch.Control><Switch.Thumb /></Switch.Control>
-                <Switch.Content><Label>Следовать за изменениями</Label></Switch.Content>
+                <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control><Label>Следовать за изменениями</Label></Switch.Content>
               </Switch>
             </div>
           </Modal.Body>

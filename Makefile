@@ -1,45 +1,27 @@
 # LiveNote: сборка и запуск локального блокнота.
-# Основные цели: make run (запуск с браузером), make serve (без браузера), make smoke.
+# Основные цели: make run (режим разработки), make install (подготовка установочного пакета).
 
 .DEFAULT_GOAL := run
 
-.PHONY: install build run serve dev-server dev-web typecheck smoke clean
+.PHONY: install build run dev-web typecheck clean
 
 install:
-	npm install
+	sh scripts/install-desktop.sh
 
 # Сборка ставит зависимости автоматически, если их ещё нет.
 build:
-	@if [ ! -d node_modules ]; then echo "==> npm install"; npm install; fi
-	npm run build
+	@if [ ! -d node_modules ]; then npm ci; fi
+	npm run desktop:web
 
-# Запуск без пересборки: сначала make build, затем make run.
 run:
-	node bin/livenote.js --open
-
-# Глобальная команда livenote (запуск из любого места):
-# собирает, пакует в tgz и ставит через npm -g. Обновление — просто запустить снова.
-install-global: build
-	@npm pack --pack-destination "$(TMPDIR)"
-	npm install -g "$(TMPDIR)/livenote-$(shell node -p "require('./package.json').version").tgz"
-	@echo "Готово: команда 'livenote' доступна глобально (перезапусти терминал, если PATH не подхватился)."
-
-# Запуск без открытия браузера (для проверки и фонового режима).
-serve:
-	node bin/livenote.js
-
-dev-server:
-	npm run dev:server
+	@if [ ! -x node_modules/.bin/tauri ]; then npm ci; fi
+	npm run tauri dev
 
 dev-web:
 	npm run dev:web
 
 typecheck:
-	npm run typecheck
-
-# Полная интеграционная проверка: REST, SSE, MCP-инструменты, экспорт/импорт.
-smoke: build
-	bash scripts/smoke.sh
+	./node_modules/.bin/tsc --noEmit -p tsconfig.web.json
 
 clean:
 	rm -rf dist

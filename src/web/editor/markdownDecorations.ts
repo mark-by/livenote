@@ -3,6 +3,7 @@ import type { EditorState, Range } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
+import { IterMode } from '@lezer/common';
 import type { SyntaxNodeRef } from '@lezer/common';
 import { parseEditorDiagrams } from './parseDiagrams';
 import { parseEditorLinks } from './parseLinks';
@@ -24,11 +25,40 @@ function active(state: EditorState, range: { readonly from: number; readonly to:
     selection.from <= range.to && selection.to >= range.from);
 }
 
+function decorateCodeBlock(state: EditorState, node: SyntaxNodeRef, marks: Range<Decoration>[]): void {
+  const first = state.doc.lineAt(node.from);
+  const last = state.doc.lineAt(node.to);
+  const [opening, closing] = node.name === 'FencedCode' ? node.node.getChildren('CodeMark') : [];
+  const info = node.node.getChild('CodeInfo');
+  const language = info ? state.doc.sliceString(info.from, info.to).trim().match(/^\S+/)?.[0] : undefined;
+
+  for (let pos = first.from; pos <= last.from;) {
+    const line = state.doc.lineAt(pos);
+    const atStart = line.number === first.number;
+    const atEnd = line.number === last.number;
+    const fence = atStart ? opening : atEnd ? closing : undefined;
+    const hideFence = fence !== undefined && !active(state, line) &&
+      // Открытый блок без тела должен оставлять место для ввода.
+      (!atStart || !atEnd);
+    const classes = ['lp-code-line'];
+    if (atStart) classes.push('lp-code-start');
+    if (atEnd) classes.push('lp-code-end');
+    if (fence) classes.push('lp-code-fence');
+    if (hideFence) classes.push('lp-code-fence-hidden');
+    marks.push(Decoration.line({ attributes: {
+      class: classes.join(' '),
+      ...(atStart && hideFence && language ? { 'data-code-language': language } : {}),
+    } }).range(pos));
+    if (hideFence) marks.push(Decoration.replace({}).range(fence.from, line.to));
+    pos = line.to + 1;
+  }
+}
+
 function decorations(state: EditorState): DecorationSet {
   const marks: Range<Decoration>[] = [];
   const tree = syntaxTree(state);
-  const diagrams = parseEditorDiagrams(state.doc.toString());
-  const links = parseEditorLinks(state.doc.toString());
+  const diagrams = parseEditorDiagrams(state.doc);
+  const links = parseEditorLinks(state.doc);
   const wikiLinks = links.filter(link => link.wiki);
   for (const link of links) {
     marks.push(Decoration.mark({
@@ -41,6 +71,7 @@ function decorations(state: EditorState): DecorationSet {
     marks.push(Decoration.replace({}).range(link.labelTo, link.to));
   }
   tree.iterate({
+    mode: IterMode.IgnoreMounts,
     enter(node: SyntaxNodeRef) {
       const { from, to, name } = node;
       if (diagrams.some(range => range.from <= from && range.to >= to)) return false;
@@ -61,12 +92,7 @@ function decorations(state: EditorState): DecorationSet {
       }
       if (className) marks.push(Decoration.mark({ class: className }).range(from, to));
       if (name === 'FencedCode' || name === 'CodeBlock') {
-        for (let pos = state.doc.lineAt(from).from; pos <= to;) {
-          marks.push(Decoration.line({ class: 'lp-code-line' }).range(pos));
-          const line = state.doc.lineAt(pos);
-          if (line.to === state.doc.length) break;
-          pos = line.to + 1;
-        }
+        decorateCodeBlock(state, node, marks);
       }
       if (name === 'ListItem' || name === 'Blockquote') {
         for (let pos = state.doc.lineAt(from).from; pos < to;) {

@@ -14,8 +14,13 @@ import { LIVENOTE_VERSION } from '../../shared/types.js';
 import { AppError } from '../errors.js';
 import type { ServerDeps } from '../ports.js';
 
-export function mountMcp(app: Express, deps: ServerDeps): void {
-  app.post('/mcp', bearerAuth(deps), express.json({ limit: '10mb' }), handleMcpPost(deps));
+interface McpVaults {
+  list(): Array<{ readonly id: string; readonly name: string }>;
+  resolve(vaultId?: string): ServerDeps;
+}
+
+export function mountMcp(app: Express, deps: ServerDeps, vaults?: McpVaults): void {
+  app.post('/mcp', bearerAuth(deps), express.json({ limit: '10mb' }), handleMcpPost(deps, vaults));
   // SSE-стрим MCP и удаление сессий не поддерживаем — только POST с JSON-ответом.
   app.get('/mcp', methodNotAllowed);
   app.delete('/mcp', methodNotAllowed);
@@ -52,10 +57,10 @@ function methodNotAllowed(_req: express.Request, res: express.Response): void {
 }
 
 /** Новый McpServer+transport на каждый запрос; ошибки handleRequest → 500 либо закрытие соединения. */
-function handleMcpPost(deps: ServerDeps): RequestHandler {
+function handleMcpPost(deps: ServerDeps, vaults?: McpVaults): RequestHandler {
   return async (req, res) => {
     try {
-      const server = buildMcpServer(deps);
+      const server = buildMcpServer(deps, vaults);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, // stateless: без сессий
         enableJsonResponse: true
@@ -79,9 +84,37 @@ function handleMcpPost(deps: ServerDeps): RequestHandler {
 // Сборка McpServer с инструментами
 // ---------------------------------------------------------------------------
 
-function buildMcpServer(deps: ServerDeps): McpServer {
+function buildMcpServer(deps: ServerDeps, vaults?: McpVaults): McpServer {
   const server = new McpServer({ name: 'livenote', version: LIVENOTE_VERSION });
-  const { service } = deps;
+  const vaultField = z.string().optional().describe('Vault ID from list_vaults. Required when more than one vault is open.');
+  const vaultInput: { readonly vault_id?: typeof vaultField } = vaults ? { vault_id: vaultField } : {};
+  type ToolAction = (service: ServerDeps['service']) => CallToolResult | Promise<CallToolResult>;
+  const storageTool = (vaultId: string | undefined, run: ToolAction) =>
+    safeTool(() => run((vaults ? vaults.resolve(vaultId) : deps).service));
+
+  // У этих инструментов в режиме SQLite нет схемы аргументов.
+  const registerStorageRead = (name: string, description: string, run: ToolAction) => {
+    if (vaults) {
+      const inputSchema = z.object({ vault_id: vaultField });
+      // MCP допускает вызов без arguments. SDK передаёт undefined прямо в схему.
+      const parse = inputSchema.safeParseAsync.bind(inputSchema);
+      inputSchema.safeParseAsync = (input, params) => parse(input === undefined ? {} : input, params);
+      server.registerTool(name, { description, inputSchema },
+        args => storageTool(args.vault_id, run));
+    } else {
+      server.registerTool(name, { description }, () => storageTool(undefined, run));
+    }
+  };
+
+  if (vaults) {
+    server.registerTool('list_vaults', {
+      description: 'List open vaults and their IDs for use with vault_id.',
+      outputSchema: { vaults: z.array(z.object({ id: z.string(), name: z.string() })) }
+    }, () => safeTool(() => {
+      const result = { vaults: vaults.list().map(({ id, name }) => ({ id, name })) };
+      return { ...jsonResult(result), structuredContent: result };
+    }));
+  }
 
   // Схемы полей: ZodRawShape (объект zod-полей, НЕ z.object) — так требует registerTool SDK.
   const pageIdField = z.string().describe('Vault: root-relative document path with extension; SQLite: page ID');
@@ -99,12 +132,10 @@ function buildMcpServer(deps: ServerDeps): McpServer {
     .optional()
     .describe('Optional idempotency key; repeating the call with the same key returns the stored result instead of duplicating it');
 
-  server.registerTool(
+  registerStorageRead(
     'list_pages',
-    {
-      description: 'List all pages: id, title, revision, createdAt, updatedAt. No block contents.'
-    },
-    () => safeTool(() => jsonResult(service.listPages()))
+    'List all pages: id, title, revision, createdAt, updatedAt. No block contents.',
+    service => jsonResult(service.listPages())
   );
 
   server.registerTool(
@@ -112,19 +143,19 @@ function buildMcpServer(deps: ServerDeps): McpServer {
     {
       description:
         'Get a full page by id: title, current revision and all blocks in display order (markdown sources and mermaid, BPMN or draw.io diagrams).',
-      inputSchema: { page_id: pageIdField }
+      inputSchema: { ...vaultInput, page_id: pageIdField }
     },
-    (args) => safeTool(() => jsonResult(service.getPage(args.page_id)))
+    (args) => storageTool(args.vault_id, service => jsonResult(service.getPage(args.page_id)))
   );
 
   server.registerTool(
     'add_page',
     {
       description: 'Create a new empty page and return its id and revision. Use request_id for safe retries.',
-      inputSchema: { title: z.string().describe('Page title'), path: z.string().optional(), source: z.string().optional(), format: z.enum(['mermaid', 'bpmn', 'drawio']).optional(), request_id: requestIdField }
+      inputSchema: { ...vaultInput, title: z.string().describe('Page title'), path: z.string().optional(), source: z.string().optional(), format: z.enum(['mermaid', 'bpmn', 'drawio']).optional(), request_id: requestIdField }
     },
     (args) =>
-      safeTool(async () => {
+      storageTool(args.vault_id, async service => {
         const page = await service.createDocument({ title: args.title, path: args.path, source: args.source, format: args.format, requestId: args.request_id });
         return jsonResult({ page_id: page.id, title: page.title, revision: page.revision });
       })
@@ -136,6 +167,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
       description:
         'Create or fully replace a markdown block. On a conflict nothing changes — read the page again and retry with the fresh revision.',
       inputSchema: {
+        ...vaultInput,
         page_id: pageIdField,
         block_id: blockIdField.optional(),
         at: z.number().int().nonnegative().optional(),
@@ -146,7 +178,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
       }
     },
     (args) =>
-      safeTool(async () =>
+      storageTool(args.vault_id, async service =>
         jsonResult(
           await service.writeBlock(args.page_id, args.block_id, 'markdown', args.source, args.expected_revision, args.request_id, { at: args.at, expectedVersion: args.expected_version })
         )
@@ -163,6 +195,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
         'BPMN lint findings (validation.lint) do NOT block publishing, but you should address them. ' +
         'For complex diagrams: publish a minimal correct version first, then refine it with successive meaningful updates — the user sees changes in real time; do not postpone publishing until the end of your work.',
       inputSchema: {
+        ...vaultInput,
         page_id: pageIdField,
         block_id: blockIdField.optional(),
         at: z.number().int().nonnegative().optional(),
@@ -186,7 +219,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
       }
     },
     (args) =>
-      safeTool(async () =>
+      storageTool(args.vault_id, async service =>
         jsonResult(
           await service.writeBlock(
             args.page_id,
@@ -214,6 +247,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
         "mode 'render' fully renders (mermaid, bpmn-js or the local draw.io editor) and returns the validation result only — no image is attached (agents should not try to view it; a human can get a PNG via REST /pages/:pageId/blocks/:blockId/png). " +
         'The service picks the checks by block type. If the passed revision is outdated, the check is skipped (stale=true) — re-read the page first.',
       inputSchema: {
+        ...vaultInput,
         page_id: pageIdField,
         block_id: z.string().describe('Diagram block id to check'),
         revision: z
@@ -225,7 +259,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
       }
     },
     (args) =>
-      safeTool(async () => {
+      storageTool(args.vault_id, async service => {
         const result = await service.checkDiagram(args.page_id, args.block_id, {
           revision: args.revision,
           mode: args.mode
@@ -245,13 +279,14 @@ function buildMcpServer(deps: ServerDeps): McpServer {
       description:
         'Recalculate the BPMN diagram layout (bpmn-auto-layout) and publish it as a new revision. Only for bpmn blocks.',
       inputSchema: {
+        ...vaultInput,
         page_id: pageIdField,
         block_id: z.string().describe('BPMN block id to re-layout'),
         expected_revision: expectedRevisionField
       }
     },
     (args) =>
-      safeTool(async () =>
+      storageTool(args.vault_id, async service =>
         jsonResult(await service.layoutDiagram(args.page_id, args.block_id, args.expected_revision))
       )
   );
@@ -261,6 +296,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
     {
       description: 'Rename a page and/or reorder and delete blocks in one atomic operation guarded by expected_revision.',
       inputSchema: {
+        ...vaultInput,
         page_id: pageIdField,
         expected_revision: expectedRevisionField,
         title: z.string().optional().describe('New page title'),
@@ -272,7 +308,7 @@ function buildMcpServer(deps: ServerDeps): McpServer {
       }
     },
     (args) =>
-      safeTool(() =>
+      storageTool(args.vault_id, service =>
         jsonResult(
           service.updatePage(
             args.page_id,
@@ -286,40 +322,41 @@ function buildMcpServer(deps: ServerDeps): McpServer {
   server.registerTool(
     'delete_page',
     {
-      description: 'Soft-delete a page (move to trash) guarded by expected_revision.',
-      inputSchema: { page_id: pageIdField, expected_revision: expectedRevisionField, expected_version: z.string().optional() }
+      description: 'Permanently delete a page guarded by expected_revision.',
+      inputSchema: { ...vaultInput, page_id: pageIdField, expected_revision: expectedRevisionField, expected_version: z.string().optional() }
     },
     (args) =>
-      safeTool(async () => {
+      storageTool(args.vault_id, async service => {
         await service.deletePage(args.page_id, args.expected_revision, args.expected_version);
-        return { content: [{ type: 'text', text: 'Страница удалена (перенесена в корзину)' }] };
+        return { content: [{ type: 'text', text: 'Страница удалена окончательно' }] };
       })
   );
 
-  server.registerTool('get_vault', { description: 'List native files, empty folders, tags and current treeVersion.' },
-    () => safeTool(() => jsonResult(service.vaultSnapshot())));
-  server.registerTool('get_document', { description: 'Read exact native source, transient UTF-16 spans and asset versions by path.', inputSchema: { path: z.string() } },
-    args => safeTool(() => jsonResult(service.getDocument(args.path))));
+  registerStorageRead('get_vault', 'List native files, empty folders, tags and current treeVersion.',
+    service => jsonResult(service.vaultSnapshot()));
+  server.registerTool('get_document', { description: 'Read exact native source, transient UTF-16 spans and asset versions by path.', inputSchema: { ...vaultInput, path: z.string() } },
+    args => storageTool(args.vault_id, service => jsonResult(service.getDocument(args.path))));
   server.registerTool('write_document', {
     description: 'Atomically save exact source and diagram assets, guarded by document and asset versions. Paths are root-relative.',
     inputSchema: {
+      ...vaultInput,
       path: z.string(), expected_revision: expectedRevisionField, expected_version: z.string(), source: z.string(), request_id: requestIdField,
       assets: z.array(z.object({ path: z.string(), source: z.string(), expected_version: z.string().nullable(), layout: z.enum(['preserve', 'auto']).optional() })).optional(),
       references: z.array(z.object({ path: z.string(), expected_version: z.string() })).optional()
     }
-  }, args => safeTool(async () => jsonResult(await service.writeDocument(args.path, {
+  }, args => storageTool(args.vault_id, async service => jsonResult(await service.writeDocument(args.path, {
     expectedRevision: args.expected_revision, expectedVersion: args.expected_version, source: args.source, requestId: args.request_id,
     assets: args.assets?.map(asset => ({ path: asset.path, source: asset.source, expectedVersion: asset.expected_version, layout: asset.layout })),
     references: args.references?.map(reference => ({ path: reference.path, expectedVersion: reference.expected_version }))
   }))));
-  server.registerTool('create_folder', { description: 'Create a real folder, including empty parents, guarded by tree version.', inputSchema: { path: z.string(), expected_tree_version: z.string() } },
-    args => safeTool(() => jsonResult(service.createFolder(args.path, args.expected_tree_version))));
-  server.registerTool('move_folder', { description: 'Move a folder subtree and rewrite resolved relative links atomically.', inputSchema: { from: z.string(), path: z.string(), expected_tree_version: z.string() } },
-    args => safeTool(() => jsonResult(service.moveFolder(args.from, args.path, args.expected_tree_version))));
-  server.registerTool('delete_folder', { description: 'Move a folder into trash. Nonempty folders require recursive:true.', inputSchema: { path: z.string(), expected_tree_version: z.string(), recursive: z.boolean().optional() } },
-    args => safeTool(() => jsonResult(service.deleteFolder(args.path, args.expected_tree_version, args.recursive))));
-  server.registerTool('move_document', { description: 'Rename or move a native document path and rewrite incoming/outgoing links.', inputSchema: { path: z.string(), to: z.string(), expected_revision: expectedRevisionField, expected_version: z.string() } },
-    args => safeTool(() => jsonResult(service.movePage(args.path, { path: args.to, expectedRevision: args.expected_revision, expectedVersion: args.expected_version }))));
+  server.registerTool('create_folder', { description: 'Create a real folder, including empty parents, guarded by tree version.', inputSchema: { ...vaultInput, path: z.string(), expected_tree_version: z.string() } },
+    args => storageTool(args.vault_id, service => jsonResult(service.createFolder(args.path, args.expected_tree_version))));
+  server.registerTool('move_folder', { description: 'Move a folder subtree and rewrite resolved relative links atomically.', inputSchema: { ...vaultInput, from: z.string(), path: z.string(), expected_tree_version: z.string() } },
+    args => storageTool(args.vault_id, service => jsonResult(service.moveFolder(args.from, args.path, args.expected_tree_version))));
+  server.registerTool('delete_folder', { description: 'Permanently delete a folder. Nonempty folders require recursive:true.', inputSchema: { ...vaultInput, path: z.string(), expected_tree_version: z.string(), recursive: z.boolean().optional() } },
+    args => storageTool(args.vault_id, service => jsonResult(service.deleteFolder(args.path, args.expected_tree_version, args.recursive))));
+  server.registerTool('move_document', { description: 'Rename or move a native document path and rewrite incoming/outgoing links.', inputSchema: { ...vaultInput, path: z.string(), to: z.string(), expected_revision: expectedRevisionField, expected_version: z.string() } },
+    args => storageTool(args.vault_id, service => jsonResult(service.movePage(args.path, { path: args.to, expectedRevision: args.expected_revision, expectedVersion: args.expected_version }))));
 
   return server;
 }

@@ -14,3 +14,9 @@ src/web/public/drawio.backup-*/
 .zed
 # heroui-agents-md
 .heroui-docs/
+/src-tauri/runtime/
+/src-tauri/.runtime-*/
+/src-tauri/target/
+/src-tauri/crates/*/target/
+/src-tauri/crates/*/Cargo.lock
+/src-tauri/gen/schemas/

@@ -3,25 +3,27 @@
  * security-мидлвари (Host/Origin, bearer-токен), REST, SSE, MCP и статика UI.
  */
 import express from 'express';
-import type { Express, NextFunction, Request, Response } from 'express';
+import type { Express, NextFunction, Request, RequestHandler, Response, Router } from 'express';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { LIVENOTE_VERSION } from '../shared/types.js';
-import type { AppConfig, LiveEvent } from '../shared/types.js';
+import type { ApiConfig, AppConfig, LiveEvent } from '../shared/types.js';
 import { NoteStore } from './db.js';
 import type { PageStore } from './store.js';
-import { VaultStore } from './vault.js';
 import { DocumentProblem } from './vaultDocument.js';
-import { NoteService } from './services.js';
-import { AppError } from './errors.js';
-import type { ServerDeps } from './ports.js';
+import type { NoteService } from './services.js';
+import { AppError, InvalidRequestError } from './errors.js';
 import { createRestRouter } from './rest.js';
 import { SseBroadcaster, createEventsRouter } from './sse.js';
 import { mountMcp } from './mcp/mcpEndpoint.js';
 import { createValidator } from './validator/index.js';
 import { createBpmnValidator } from './validator/bpmn.js';
 import { createDrawioValidator } from './validator/drawio.js';
+import { StorageRuntime, VaultRegistry, vaultNotFound } from './vaultRegistry.js';
+import type { SharedValidators } from './vaultRegistry.js';
+import { VaultPicker } from './vaultPicker.js';
+import type { ChooseFolder } from './vaultPicker.js';
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 /** dist/server -> dist/web; при запуске tsx используется src/web/public/drawio. */
@@ -37,14 +39,46 @@ export interface RunningApp {
   close(): Promise<void>;
 }
 
-export async function createApp(config: import('../shared/types.js').AppConfig): Promise<RunningApp> {
-  const broadcaster = new SseBroadcaster();
-  const store = config.vaultPath !== undefined ? new VaultStore(config.vaultPath, broadcaster) : new NoteStore(config.dbPath);
-  const validator = await createValidator(config.mermaidTheme);
-  const bpmnValidator = await createBpmnValidator();
-  const drawioValidator = await createDrawioValidator({ baseUrl: `http://127.0.0.1:${config.port}` });
-  const service = new NoteService(store, broadcaster, validator, bpmnValidator, drawioValidator);
-  const deps: ServerDeps = { service, broadcaster, config };
+interface CreateAppOptions {
+  readonly cacheHome?: string;
+  readonly chooseFolder?: ChooseFolder;
+  readonly closeGraceMs?: number;
+}
+
+function closeValidators(validators: SharedValidators): Promise<PromiseSettledResult<void>[]> {
+  return Promise.allSettled(Object.values(validators).map(async candidate => {
+    if ('close' in candidate && typeof candidate.close === 'function') {
+      await candidate.close();
+    } else if ('browser' in candidate) {
+      const browser = candidate.browser;
+      if (typeof browser === 'object' && browser !== null && 'close' in browser && typeof browser.close === 'function') {
+        await browser.close();
+      }
+    }
+  }));
+}
+
+export async function createApp(config: AppConfig, options: CreateAppOptions = {}): Promise<RunningApp> {
+  const validators = {
+    mermaid: await createValidator(config.mermaidTheme),
+    bpmn: await createBpmnValidator(),
+    drawio: await createDrawioValidator({ baseUrl: `http://127.0.0.1:${config.port}` })
+  };
+  const registry = config.vaultPath === undefined ? undefined :
+    new VaultRegistry({ config, validators, cacheHome: options.cacheHome, closeGraceMs: options.closeGraceMs });
+  const startup = await (async () => {
+    if (registry !== undefined && config.vaultPath !== undefined) return registry.openStartup(config.vaultPath);
+    const runtime = new StorageRuntime(new NoteStore(config.dbPath), new SseBroadcaster(), { config, validators });
+    return { runtime, descriptor: undefined };
+  })().catch(async (error: unknown) => {
+    const cleanup = await closeValidators(validators);
+    const failures = cleanup.filter(result => result.status === 'rejected').map(result => result.reason);
+    if (failures.length > 0) throw new AggregateError([error, ...failures], 'Не удалось запустить приложение');
+    throw error;
+  });
+  const { runtime, descriptor } = startup;
+  const { store, broadcaster, deps } = runtime;
+  const picker = new VaultPicker(registry, options.chooseFolder);
 
   const app = express();
   app.disable('x-powered-by');
@@ -81,14 +115,9 @@ export async function createApp(config: import('../shared/types.js').AppConfig):
 
   // Bearer-токен для MCP и API (SSE принимает токен query-параметром из-за EventSource).
   const authRequired = config.token !== null && config.token.length > 0;
-  const requireAuth = (req: Request, res: Response, next: NextFunction): void => {
-    if (!authRequired) {
-      next();
-      return;
-    }
-    const header = req.headers.authorization;
+  const requireAuth = (allowQueryToken: boolean): RequestHandler => (req, res, next) => {
     const queryToken = typeof req.query.token === 'string' ? req.query.token : undefined;
-    if (header === `Bearer ${config.token}` || queryToken === config.token) {
+    if (!authRequired || req.headers.authorization === `Bearer ${config.token}` || (allowQueryToken && queryToken === config.token)) {
       next();
       return;
     }
@@ -98,13 +127,38 @@ export async function createApp(config: import('../shared/types.js').AppConfig):
   };
 
   // --- Каналы приложения ------------------------------------------------------
-  app.get('/api/config', (req, res) => {
-    res.json({ version: LIVENOTE_VERSION, tokenRequired: authRequired, mermaidTheme: config.mermaidTheme, storage: config.vaultPath !== undefined ? 'vault' : 'sqlite' });
+  app.get('/api/config', (_req, res) => {
+    const apiConfig: ApiConfig = {
+      version: LIVENOTE_VERSION,
+      tokenRequired: authRequired,
+      mermaidTheme: config.mermaidTheme,
+      storage: descriptor === undefined ? 'sqlite' : 'vault',
+      folderPickerAvailable: picker.available,
+      ...(descriptor === undefined ? {} : { defaultVaultId: descriptor.id })
+    };
+    res.json(apiConfig);
   });
 
-  app.use('/events', requireAuth, createEventsRouter(deps));
-  app.use('/api', requireAuth, express.json({ limit: '10mb' }), createRestRouter(deps));
-  mountMcp(app, deps);
+  app.post('/api/vaults/open', requireAuth(false), picker.guards, picker.parseBody, picker.handleOpen);
+  app.use('/events', requireAuth(true), createEventsRouter(vaultId => {
+    if (vaultId === undefined) return broadcaster;
+    if (typeof vaultId !== 'string') throw new InvalidRequestError('Укажите один vault_id');
+    if (registry === undefined) throw vaultNotFound(vaultId);
+    return registry.lookup(vaultId).broadcaster;
+  }));
+  app.use('/api', requireAuth(true), express.json({ limit: '10mb' }));
+  const restRouters = new WeakMap<StorageRuntime, Router>();
+  app.use('/api/vaults/:vaultId', (req, res, next) => {
+    const { vaultId } = req.params;
+    if (registry === undefined) throw vaultNotFound(vaultId);
+    const selected = registry.lookup(vaultId);
+    const router = restRouters.get(selected) ?? createRestRouter(selected.deps);
+    restRouters.set(selected, router);
+    router(req, res, next);
+  });
+  app.use('/api', createRestRouter(deps));
+  if (registry === undefined) mountMcp(app, deps);
+  else mountMcp(app, deps, registry);
 
   // --- Статика UI + SPA fallback ---------------------------------------------
   // draw.io работает только с локальными ресурсами; внешние соединения запрещены CSP.
@@ -175,17 +229,18 @@ export async function createApp(config: import('../shared/types.js').AppConfig):
     res.status(500).json({ error: { code: 'internal', message } });
   });
 
-  let closed = false;
+  let closing: Promise<void> | undefined;
   return {
-    app, broadcaster, service, store,
-    async close() {
-      if (closed) return;
-      closed = true;
-      await Promise.all([Promise.resolve().then(() => store.close()), ...[validator, bpmnValidator, drawioValidator].map(async candidate => {
-        const resource = candidate as { close?: () => Promise<void>; browser?: { close(): Promise<void> } };
-        if (resource.close) await resource.close();
-        else await resource.browser?.close();
-      })]);
+    app, broadcaster, service: deps.service, store,
+    close() {
+      return closing ??= (async () => {
+        const storageClose = registry === undefined ? runtime.close() : registry.close();
+        const storageResults = await Promise.allSettled([picker.close(), storageClose]);
+        const validatorResults = await closeValidators(validators);
+        const failures = [...storageResults, ...validatorResults]
+          .filter(result => result.status === 'rejected').map(result => result.reason);
+        if (failures.length > 0) throw new AggregateError(failures, 'Не удалось завершить работу приложения');
+      })();
     }
   };
 }

@@ -41,6 +41,83 @@ test('external Markdown and shared diagram bytes reject stale revision and full 
   assert.throws(() => store.prepare(page.id, { ...tokens(fresh), source: 'stale' }), conflict);
 });
 
+test('removing the last vault embed deletes its diagram but preserves shared diagrams', () => {
+  const { root, store } = fixture();
+  store.createPage('Shared', { path: 'Shared.drawio', source: '<mxfile/>' });
+  store.createPage('Unused', { path: 'Unused.bpmn', source: '<xml/>' });
+  const page = store.createPage('One', { source: '![a](Shared.drawio) ![b](Shared.drawio) ![c](Unused.bpmn)' });
+  store.createPage('Two', { source: '![[Shared.drawio]]' });
+  const before = store.document(page.id);
+
+  // Act: сохраняем документ без одного общего и единственного отдельного встраивания.
+  const result = save(store, before, '![b](Shared.drawio)');
+
+  // Assert: общий файл остаётся, а файл без встраиваний удалён.
+  assert.equal(result.source, '![b](Shared.drawio)');
+  assert.equal(readFileSync(join(root, 'Shared.drawio'), 'utf8'), '<mxfile/>');
+  assert.equal(existsSync(join(root, 'Unused.bpmn')), false);
+  assert.equal(store.document('Two.md').source, '![[Shared.drawio]]');
+});
+
+test('deleting a document removes only diagrams with no remaining embeds', () => {
+  const { root, store } = fixture();
+  store.createPage('Shared', { path: 'Shared.drawio', source: '<mxfile/>' });
+  store.createPage('Unique', { path: 'Unique.mmd', source: 'graph TD' });
+  const page = store.createPage('One', { source: '![a](Shared.drawio) ![b](Unique.mmd)' });
+  store.createPage('Two', { source: '![a](Shared.drawio)' });
+
+  // Act: удаляем документ с общей и отдельной диаграммами.
+  store.deletePage(page.id, page.revision);
+
+  // Assert: файл общей диаграммы остаётся, отдельный файл удалён.
+  assert.equal(existsSync(join(root, 'Shared.drawio')), true);
+  assert.equal(existsSync(join(root, 'Unique.mmd')), false);
+  assert.equal(store.document('Two.md').source, '![a](Shared.drawio)');
+});
+
+test('removing a diagram rejects asset changes after preparation', () => {
+  const { root, store } = fixture();
+  store.createPage('Diagram', { path: 'Diagram.drawio', source: '<mxfile/>' });
+  const page = store.createPage('One', { source: '![a](Diagram.drawio)' });
+  const before = store.document(page.id);
+  const prepared = store.prepare(page.id, { ...tokens(before), source: '' });
+  writeFileSync(join(root, 'Diagram.drawio'), '<mxfile changed="yes"/>');
+
+  // Act и Assert: устаревшее сохранение отклоняется без удаления файла.
+  assert.throws(() => store.finish(page.id, prepared), conflict);
+  assert.equal(readFileSync(join(root, 'Diagram.drawio'), 'utf8'), '<mxfile changed="yes"/>');
+  assert.equal(store.document(page.id).source, before.source);
+});
+
+test('removing one of several embeds keeps the asset until its last embed is removed', () => {
+  const { root, store } = fixture();
+  store.createPage('Diagram', { path: 'Diagram.drawio', source: '<mxfile/>' });
+  const page = store.createPage('One', { source: '![a](Diagram.drawio) ![b](Diagram.drawio)' });
+  const before = store.document(page.id);
+
+  // Act: удаляем одно встраивание и затем последнее.
+  const remaining = save(store, before, '![b](Diagram.drawio)');
+  assert.equal(readFileSync(join(root, 'Diagram.drawio'), 'utf8'), '<mxfile/>');
+  save(store, remaining, '');
+
+  // Assert: файл удалён только после последнего встраивания.
+  assert.equal(existsSync(join(root, 'Diagram.drawio')), false);
+});
+
+test('unreadable documents prevent deletion of potentially shared diagrams', () => {
+  const { root, store } = fixture();
+  store.createPage('Diagram', { path: 'Diagram.drawio', source: '<mxfile/>' });
+  const page = store.createPage('One', { source: '![a](Diagram.drawio)' });
+  writeFileSync(join(root, 'Conflict.md'), '<<<<<<< HEAD\na\n=======\nb\n>>>>>>> branch\n');
+  const before = store.document(page.id);
+
+  // Act: удаляем встраивание, когда другой документ нельзя прочитать.
+  save(store, before, '');
+
+  // Assert: файл сохранён, поскольку проверить все встраивания нельзя.
+  assert.equal(readFileSync(join(root, 'Diagram.drawio'), 'utf8'), '<mxfile/>');
+});
+
 test('editing one of two identical fences replaces its range and retains every unrelated byte', () => {
   const { store } = fixture(); const fence = '```mermaid\r\nflowchart LR\r\n A-->B\r\n```';
   const source = '---\nid: old\r\nunknown: 42 # keep\r\n---\r\n' + fence + '\r\n\r\n' + fence + '\r\nlast';
@@ -85,7 +162,7 @@ test('plain and duplicate YAML ID notes stay readable while Git conflicts quaran
   assert.equal(store.document('Conflict.md').source, 'resolved');
 });
 
-test('writer lock durable replay and soft delete preserve independently shared diagram files', () => {
+test('writer lock durable replay and permanent deletion preserve independently shared diagram files', () => {
   const { root, store } = fixture();
   assert.throws(() => new VaultStore(root), conflict);
   const page = store.atomic('create-key', { title: 'Created' }, () => store.createPage('Created'));
@@ -94,10 +171,12 @@ test('writer lock durable replay and soft delete preserve independently shared d
   assert.throws(() => restart.atomic('create-key', { title: 'Other' }, () => page), (error: unknown) => error instanceof AppError && error.code === 'idempotency_key_reuse');
   const before = restart.document(page.id);
   const d = restart.finish(page.id, restart.prepare(page.id, { ...tokens(before), source: '![x](Shared.drawio)', assets: [{ path: 'Shared.drawio', source: '<mxfile/>', expectedVersion: null }] }));
-  restart.softDeletePage(page.id, d.page.revision);
-  assert.equal(restart.listPages().length, 0);
+  restart.createPage('Other', { source: '![x](Shared.drawio)' });
+  restart.deletePage(page.id, d.page.revision);
+  assert.equal(restart.listPages().length, 1);
   assert.equal(readFileSync(join(root, 'Shared.drawio'), 'utf8'), '<mxfile/>');
-  assert.ok(restart.files.list('.livenote/trash', true).files.some(path => path.endsWith(page.id)));
+  assert.equal(existsSync(join(root, page.id)), false);
+  assert.equal(existsSync(join(root, '.livenote/trash')), false);
 });
 
 test('restart completes recognized journals and quarantines unknown third-party bytes', () => {
@@ -147,7 +226,8 @@ test('empty nested folder moves include binary bytes and rewrite incoming outgoi
   assert.throws(() => store.moveFolder('Moved', 'Moved/Sub', store.snapshot().treeVersion));
   assert.throws(() => store.deleteFolder('Moved', store.snapshot().treeVersion), conflict);
   store.deleteFolder('Moved', store.snapshot().treeVersion, true);
-  assert.ok(store.files.list('.livenote/trash', true).folders.some(path => path.endsWith('Empty/Nested')));
+  assert.equal(existsSync(join(root, 'Moved')), false);
+  assert.equal(existsSync(join(root, '.livenote/trash')), false);
   assert.equal(store.document('Other.md').links[0]?.targetPageId, null);
 });
 
@@ -230,8 +310,8 @@ test('real Git lists native Markdown and XML but ignores all private vault state
   const store = new VaultStore(root); stores.push(store);
   store.createPage('Public', { source: '# Public\n' });
   store.createPage('Diagram', { path: 'Diagram.drawio', source: '<mxfile/>' });
-  const removed = store.createPage('Removed', { source: 'private trash' });
-  store.softDeletePage(removed.id, removed.revision);
+  const removed = store.createPage('Removed', { source: 'removed document' });
+  store.deletePage(removed.id, removed.revision);
   mkdirSync(join(root, '.livenote/transactions/in-flight'), { recursive: true });
   writeFileSync(join(root, '.livenote/transactions/in-flight/journal.json'), 'private transaction bytes');
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };

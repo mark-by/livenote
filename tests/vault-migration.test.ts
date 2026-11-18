@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig, DEFAULT_VAULT } from '../src/server/config.ts';
+import { parseConfig } from '../src/server/config.ts';
 import { migrateFromVault, migrateVault } from '../src/server/vaultMigration.ts';
 import { NoteStore } from '../src/server/db.ts';
 import { VaultStore } from '../src/server/vault.ts';
@@ -17,8 +17,8 @@ const root = () => { const path = mkdtempSync(join(tmpdir(), 'vault-migration-')
 afterEach(() => { for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true }); });
 
 test('CLI storage flags environment precedence and explicit migration sources are unambiguous', () => {
-  const defaults = parseConfig([], {}); assert.equal(defaults.command, 'serve');
-  assert.equal(defaults.command === 'serve' && defaults.config.vaultPath, DEFAULT_VAULT);
+  const defaults = parseConfig([], {}, '/cwd'); assert.equal(defaults.command, 'serve');
+  assert.equal(defaults.command === 'serve' && defaults.config.vaultPath, '/cwd');
   const vault = parseConfig(['--vault', 'notes'], { LIVENOTE_DB: '/db', LIVENOTE_VAULT: '/other' }, '/cwd');
   assert.equal(vault.command === 'serve' && vault.config.vaultPath, '/cwd/notes');
   const db = parseConfig(['--db', 'legacy.sqlite'], { LIVENOTE_DB: '/db', LIVENOTE_VAULT: '/other' }, '/cwd');
@@ -35,14 +35,18 @@ test('CLI storage flags environment precedence and explicit migration sources ar
   assert.deepEqual(parseConfig(['migrate', '--from-vault', 'source', '--vault', 'target'], {}, '/cwd'), { command: 'migrate-vault', sourcePath: '/cwd/source', vaultPath: '/cwd/target' });
 });
 
-test('SQLite migration copies WAL snapshot without changing DB WAL SHM and preserves sources and deleted pages', () => {
+test('SQLite migration archives deleted pages without restoring them or creating trash', () => {
   const directory = root(); const dbPath = join(directory, 'source.sqlite'); const legacy = new NoteStore(dbPath);
   let page = legacy.createPage('Same title');
   page = legacy.upsertBlock(page.id, 'intro', 'markdown', '# Exact text\n\n', page.revision).page;
   page = legacy.upsertBlock(page.id, 'flow', 'mermaid', 'flowchart LR\n A --> B', page.revision, 'Flow title').page;
   page = legacy.upsertBlock(page.id, 'process', 'bpmn', '<definitions>\r\n</definitions>', page.revision, 'BPMN title').page;
   page = legacy.upsertBlock(page.id, 'architecture', 'drawio', '<mxfile>  </mxfile>', page.revision, 'XML title').page;
-  const deleted = legacy.createPage('Deleted'); legacy.softDeletePage(deleted.id, deleted.revision);
+  let deleted = legacy.createPage('Deleted');
+  deleted = legacy.upsertBlock(deleted.id, 'deleted-block', 'markdown', 'Deleted content', deleted.revision).page;
+  const raw = new Database(dbPath);
+  raw.prepare('UPDATE pages SET deleted_at = ? WHERE id = ?').run('2020-01-01T00:00:00Z', deleted.id);
+  raw.close();
   const paths = [dbPath, dbPath + '-wal', dbPath + '-shm']; const hashes = paths.map(path => sha256(readFileSync(path))); const target = join(directory, 'vault');
   try {
     assert.deepEqual({ ...migrateVault(dbPath, target), warning: '' }, { pages: 1, deletedPages: 1, warning: '' });
@@ -55,9 +59,13 @@ test('SQLite migration copies WAL snapshot without changing DB WAL SHM and prese
       assert.equal(saved.page.blocks.find(block => block.type === 'mermaid')?.source, page.blocks.find(block => block.type === 'mermaid')?.source);
       assert.deepEqual(saved.assets.map(asset => asset.source), ['<definitions>\r\n</definitions>', '<mxfile>  </mxfile>']);
       assert.equal(migrated.listPages().length, 1);
-      assert.ok(migrated.files.list('.livenote/trash/migration', true).files.some(path => path.endsWith('Deleted.md')));
+      assert.equal(existsSync(join(target, '.livenote/trash')), false);
+      assert.equal(existsSync(join(target, 'Deleted.md')), false);
       const records = JSON.parse(readFileSync(join(target, '.livenote/migration/blocks.json'), 'utf8'));
       assert.deepEqual(records[0].blocks.map((block: { source: string }) => block.source), page.blocks.map(block => block.source));
+      const deletedRecord = records.find((record: { id: string }) => record.id === deleted.id);
+      assert.equal(deletedRecord.path, null);
+      assert.equal(deletedRecord.blocks[0].source, 'Deleted content');
       assert.deepEqual(readFileSync(join(target, '.livenote/migration/original/source.sqlite-wal')), readFileSync(dbPath + '-wal'));
       const moved = migrated.move(saved.path, { expectedRevision: saved.page.revision, expectedVersion: saved.version, path: 'Moved/Exact.md' });
       assert.equal(moved.document?.assets[0]?.source, '<definitions>\r\n</definitions>');
@@ -65,6 +73,35 @@ test('SQLite migration copies WAL snapshot without changing DB WAL SHM and prese
     assert.throws(() => migrateVault(dbPath, target));
     assert.equal(readdirSync(directory).filter(name => name.includes('-migration-')).length, 0);
   } finally { legacy.close(); }
+});
+
+test('legacy vault migration archives trash and prior archives without restoring deleted pages', () => {
+  // Arrange: создаём старую корзину и существующий архив с исходными байтами.
+  const directory = root(); const source = join(directory, 'source'); const target = join(directory, 'native');
+  mkdirSync(join(source, '.livenote/trash/old'), { recursive: true });
+  mkdirSync(join(source, '.livenote/migration/previous'), { recursive: true });
+  const deletedPath = '.livenote/trash/old/Deleted.md';
+  const assetPath = '.livenote/trash/old/missing.drawio';
+  const deletedSource = '<!-- livenote:block broken -->\n![diagram](missing.drawio)';
+  const asset = '<mxfile>archived</mxfile>';
+  writeFileSync(join(source, 'Active.md'), 'active');
+  writeFileSync(join(source, deletedPath), deletedSource);
+  writeFileSync(join(source, assetPath), asset);
+  writeFileSync(join(source, '.livenote/migration/previous/archive.bin'), 'previous archive');
+
+  // Act: переносим старое хранилище.
+  const result = migrateFromVault(source, target);
+
+  // Assert: удалённая страница остаётся только в архиве миграции.
+  assert.equal(result.pages, 1);
+  assert.equal(result.deletedPages, 1);
+  assert.equal(existsSync(join(target, '.livenote/trash')), false);
+  assert.equal(existsSync(join(target, 'Deleted.md')), false);
+  assert.equal(readFileSync(join(target, '.livenote/migration/original', deletedPath), 'utf8'), deletedSource);
+  assert.equal(readFileSync(join(target, '.livenote/migration/original', assetPath), 'utf8'), asset);
+  assert.equal(readFileSync(join(target, '.livenote/migration/original/.livenote/migration/previous/archive.bin'), 'utf8'), 'previous archive');
+  const store = new VaultStore(target);
+  try { assert.deepEqual(store.listPages().map(page => page.id), ['Active.md']); } finally { store.close(); }
 });
 
 test('invalid SQLite migration leaves source unchanged and removes its staging directory', () => {

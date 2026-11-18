@@ -1,15 +1,17 @@
 // allow: SIZE_OK — единый PageStore владеет синхронной проекцией, CAS и deferred transaction; предел задачи 600 строк.
-import { randomUUID } from 'node:crypto';
 import { existsSync, watch, type FSWatcher } from 'node:fs';
-import { posix } from 'node:path';
+import { basename, posix } from 'node:path';
 import type { BlockType, Broadcaster, CreatePageBody, MoveVaultPageBody, PageFull, PatchVaultMetadataBody, UpdatePagePatch, VaultDocument, VaultMoveResult, VaultProblem, VaultSearchHit, VaultSnapshot, WriteVaultDocumentBody } from '../shared/types.js';
 import type { NewBlock } from './db.js';
 import { AppError, IdempotencyKeyError, InvalidRequestError, NotFoundError } from './errors.js';
 import type { PageStore } from './store.js';
-import { applyEdits, blockContent, diagramFormat, DocumentProblem, fileVersion, markdownProse, openable, parseVaultDocument, relativeUrl, safeTitle, sha256, type ParsedVaultDocument } from './vaultDocument.js';
+import { applyEdits, blockContent, diagramFormat, DocumentProblem, fileVersion, parseVaultDocument, relativeUrl, safeTitle, sha256, type ParsedVaultDocument } from './vaultDocument.js';
 import { VaultFiles, validateNotePath, validateVaultPath, type DirectoryChange, type FileWrite } from './vaultFiles.js';
-import { folded, publicLinks, resolveLinks, rewritePaths, type LinkSpan } from './vaultLinks.js';
+import { folded, resolveLinks, rewritePaths, type LinkSpan } from './vaultLinks.js';
 import { vaultZip } from './vaultExport.js';
+import { VaultIndex } from './vaultIndex.js';
+import { VaultProjection } from './vaultProjection.js';
+import { ignoredPath } from './vaultIgnore.js';
 
 export interface PreparedDocument {
   previous: ParsedVaultDocument; next: ParsedVaultDocument; body: WriteVaultDocumentBody;
@@ -21,20 +23,24 @@ export class VaultStore implements PageStore {
   changedPages: Array<{ id: string; revision: number }> = [];
   private pages = new Map<string, ParsedVaultDocument>();
   private problems: VaultProblem[] = [];
+  private folders: string[] = [];
   private links = new Map<string, LinkSpan[]>();
-  private renders = new Map<string, { revision: number; ok: boolean; error: string | null }>();
+  private renders = new Map<string, Map<string, { revision: number; ok: boolean; error: string | null }>>();
+  private readonly index?: VaultIndex;
+  private readonly projection: VaultProjection;
   private watcher?: FSWatcher;
   private timer?: ReturnType<typeof setInterval>;
   private debounce?: ReturnType<typeof setTimeout>;
   private closed = false;
   private deferred: FileWrite[] | null = null;
-  private lastTree = '';
-  constructor(path: string, private readonly broadcaster?: Broadcaster) {
+  constructor(path: string, private readonly broadcaster?: Broadcaster, options?: { readonly cachePath?: string }) {
     this.files = new VaultFiles(path);
     try {
+      if (options?.cachePath) this.index = new VaultIndex(options.cachePath, this.files.root);
+      this.projection = new VaultProjection(this.index?.load() ?? new Map());
       this.reconcile(false); this.cleanupIdempotency(86_400_000);
       this.watcher = watch(this.files.root, { recursive: true }, (_event, filename) => {
-        if (filename && String(filename).startsWith('.livenote')) return;
+        if (filename && (String(filename) === '.livenote' || String(filename).startsWith('.livenote/'))) return;
         clearTimeout(this.debounce); this.debounce = setTimeout(() => this.reconcile(true), 60); this.debounce.unref();
       });
       this.watcher.on('error', () => { this.watcher?.close(); this.watcher = undefined; });
@@ -57,59 +63,30 @@ export class VaultStore implements PageStore {
   }
   reconcile(external = true): void {
     if (this.closed) return;
-    const previous = this.pages; const scan = this.files.list();
-    const paths = new Set(scan.files.filter(openable));
-    for (const write of this.deferred ?? []) if (openable(write.path) && !write.path.startsWith('.livenote/')) {
-      if (write.source === null) paths.delete(write.path); else paths.add(write.path);
+    const previous = this.pages;
+    const lastTree = this.projection.treeVersion;
+    const { pages: next, problems, links, folders, records } = this.projection.reconcile(this.files, this.deferred);
+    this.pages = next; this.problems = problems; this.links = links; this.folders = folders;
+    if (!this.deferred) this.index?.save(records);
+    for (const id of this.renders.keys()) {
+      const page = next.get(id)?.document.page;
+      if (page && page !== previous.get(id)?.document.page) this.applyRenders(page);
     }
-    const next = new Map<string, ParsedVaultDocument>(); const problems = [...scan.problems, ...this.files.recoveryProblems];
-    for (const path of paths) {
-      if (this.files.recoveryProblems.some(problem => problem.path === path)) continue;
-      try {
-        const note = this.read(path); const parsed = parseVaultDocument(note.source, path, asset => this.read(asset), note);
-        next.set(path, parsed); problems.push(...parsed.problems);
-      } catch (error) {
-        problems.push({ code: error instanceof DocumentProblem ? error.code : 'unreadable_file', path, pageId: path, message: error instanceof Error ? error.message : 'Документ недоступен' });
-      }
-    }
-    this.pages = next; this.problems = problems; this.links.clear();
-    const documents = [...next.values()].map(item => item.document);
-    for (const [id, parsed] of next) {
-      const links = resolveLinks(parsed.document, documents, 0, scan.files);
-      this.links.set(id, links); parsed.document.links = publicLinks(links);
-      parsed.document.backlinks = documents.filter(other => other.path !== id && resolveLinks(other, documents, 0, scan.files).some(link => link.targetPageId === id))
-        .map(other => ({ pageId: other.path, path: other.path, title: other.page.title })).sort((a, b) => a.path.localeCompare(b.path));
-      for (const block of parsed.document.page.blocks) {
-        const render = this.renders.get(id + '\0' + parsed.document.page.revision + '\0' + block.id);
-        if (render) { block.renderedRevision = render.revision; block.renderOk = render.ok; block.renderError = render.error; }
-      }
-    }
-    const tree = this.treeVersion();
     if (external && !this.deferred) {
       for (const [id, parsed] of next) if (previous.get(id)?.document.version !== parsed.document.version) this.broadcaster?.publish({ event: previous.has(id) ? 'page.updated' : 'page.created', pageId: id, revision: parsed.document.page.revision, origin: 'external', ts: Date.now() });
       for (const [id, parsed] of previous) if (!next.has(id)) this.broadcaster?.publish({ event: 'page.deleted', pageId: id, revision: parsed.document.page.revision, origin: 'external', ts: Date.now() });
-      if (this.lastTree && tree !== this.lastTree) this.broadcaster?.publish({ event: 'vault.updated', pageId: '', revision: 0, origin: 'external', ts: Date.now() });
+      if (lastTree && this.projection.treeVersion !== lastTree) this.broadcaster?.publish({ event: 'vault.updated', pageId: '', revision: 0, origin: 'external', ts: Date.now() });
     }
-    this.lastTree = tree;
   }
-  private treeVersion(): string {
-    const scan = this.files.list();
-    return fileVersion(JSON.stringify([scan.folders, scan.files.map(path => {
-      try { return [path, fileVersion(this.files.readBytes(path).bytes)]; }
-      catch (error) {
-        if (error instanceof DocumentProblem) return [path, error.code];
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [path, 'missing'];
-        throw error;
-      }
-    })]));
-  }
+  private treeVersion(): string { return this.projection.treeVersion; }
   snapshot(): VaultSnapshot {
     this.reconcile();
     const documents = [...this.pages.values()].map(item => item.document).sort((a, b) => a.path.localeCompare(b.path));
     const pages = documents.filter(d => d.path.endsWith('.md')).map(d => ({ id: d.path, title: d.page.title, revision: d.page.revision, createdAt: d.page.createdAt, updatedAt: d.page.updatedAt, path: d.path, aliases: d.aliases, tags: d.tags }));
     const tags = new Map<string, number>(); for (const page of pages) for (const tag of page.tags) tags.set(tag, (tags.get(tag) ?? 0) + 1);
-    return { pages, files: documents.map(d => ({ path: d.path, title: d.page.title, version: d.version, revision: d.page.revision, kind: diagramFormat(d.path) ?? 'markdown' })),
-      folders: this.files.list().folders, treeVersion: this.treeVersion(), tags: [...tags].map(([tag, count]) => ({ tag, count })).sort((a, b) => a.tag.localeCompare(b.tag)), problems: this.problems };
+    const snapshot: VaultSnapshot & { vaultName: string } = { vaultName: basename(this.files.root) || this.files.root, pages, files: documents.map(d => ({ path: d.path, title: d.page.title, version: d.version, revision: d.page.revision, kind: diagramFormat(d.path) ?? 'markdown' })),
+      folders: this.folders, treeVersion: this.treeVersion(), tags: [...tags].map(([tag, count]) => ({ tag, count })).sort((a, b) => a.tag.localeCompare(b.tag)), problems: this.problems };
+    return snapshot;
   }
   listPages() { return this.snapshot().pages; }
   exportArchive(): Buffer {
@@ -143,7 +120,10 @@ export class VaultStore implements PageStore {
   private publish(writes: FileWrite[], guards: ParsedVaultDocument[] = [], directories: DirectoryChange[] = []): void {
     for (const guard of guards) this.check(guard.document.path, guard.document.page.revision, guard.document.version);
     const before = new Map([...this.pages].map(([id, item]) => [id, item.document.version]));
-    if (this.deferred) for (const write of writes) { const prior = this.deferred.find(entry => entry.path === write.path); if (prior) prior.source = write.source; else this.deferred.push(write); }
+    if (this.deferred) {
+      this.files.assertAuthorable(writes.map(write => ({ path: write.path, directory: false })));
+      for (const write of writes) { const prior = this.deferred.find(entry => entry.path === write.path); if (prior) prior.source = write.source; else this.deferred.push(write); }
+    }
     else this.files.commit(writes, directories);
     this.reconcile(false);
     this.changedPages = [...this.pages].filter(([id, item]) => before.get(id) !== item.document.version).map(([id, item]) => ({ id, revision: item.document.page.revision }));
@@ -193,6 +173,7 @@ export class VaultStore implements PageStore {
       if (old === null) this.destinationFree(entry.path);
       assets.set(entry.path, entry.source); assetExpected.set(entry.path, old);
     }
+    if (assets.size) this.files.assertAuthorable([...assets.keys()].map(path => ({ path, directory: false })));
     if (diagramFormat(id) && assets.size) throw new InvalidRequestError('Standalone diagram не принимает assets');
     const next = this.parse(body.source, id, assets);
     for (const path of assets.keys()) if (!next.document.assets.some(asset => asset.path === path)) throw new InvalidRequestError('Asset должен быть встроен в документ');
@@ -206,11 +187,25 @@ export class VaultStore implements PageStore {
     for (const asset of next.document.assets) if (!assets.has(asset.path)) references.set(asset.path, asset.source);
     return { previous, next, body, assets, assetExpected, references };
   }
+  private unusedAssets(previous: ParsedVaultDocument, next?: ParsedVaultDocument): FileWrite[] {
+    if (!previous.document.assets.length) return [];
+    const scan = this.files.list();
+    // Не удаляем диаграммы, пока исключённые заметки могут на них ссылаться.
+    if (scan.ignoredFolders.length || scan.problems.length || scan.files.some(path => path.endsWith('.md') && !this.pages.has(path) &&
+      !this.deferred?.some(write => write.path === path && write.source === null))) return [];
+    return previous.document.assets.flatMap(asset => {
+      if (asset.source === null || next?.document.assets.some(item => item.path === asset.path) ||
+        [...this.pages.values()].some(page => page.document.path !== previous.document.path &&
+          page.document.assets.some(item => item.path === asset.path))) return [];
+      return [{ path: asset.path, expected: asset.source, source: null }];
+    });
+  }
   finish(id: string, prepared: PreparedDocument): VaultDocument {
     this.check(id, prepared.body.expectedRevision, prepared.body.expectedVersion);
     for (const [path, source] of prepared.references) if (this.optionalSource(path) !== source) this.conflict([path], prepared.previous.document);
     const writes: FileWrite[] = [{ path: id, expected: prepared.previous.document.source, source: prepared.next.document.source }];
     for (const [path, source] of prepared.assets) writes.push({ path, source, expected: prepared.assetExpected.get(path) ?? null });
+    writes.push(...this.unusedAssets(prepared.previous, prepared.next));
     this.publish(writes, [prepared.previous]); return this.require(id).document;
   }
   metadata(id: string, body: PatchVaultMetadataBody): VaultDocument {
@@ -274,11 +269,14 @@ export class VaultStore implements PageStore {
     return this.finish(id, this.prepare(id, { expectedRevision: revision, expectedVersion: before.document.version, source })).page;
   }
   deleteBlock(id: string, blockId: string, revision: number): PageFull { return this.updatePage(id, { deleteBlockIds: [blockId] }, revision); }
-  softDeletePage(id: string, revision: number): void {
-    const before = this.check(id, revision); const directory = '.livenote/trash/' + randomUUID();
-    this.publish([{ path: directory + '/' + id, source: before.document.source, expected: null }, { path: id, source: null, expected: before.document.source }], [before]);
+  deletePage(id: string, revision: number): void {
+    const before = this.check(id, revision);
+    this.publish([{ path: id, source: null, expected: before.document.source }, ...this.unusedAssets(before)], [before]);
   }
-  private checkTree(version: string): void { if (typeof version !== 'string' || version !== this.treeVersion()) this.conflict([]); }
+  private checkTree(version: string): void {
+    this.reconcile();
+    if (typeof version !== 'string' || version !== this.treeVersion()) this.conflict([]);
+  }
   createFolder(path: string, version: string): VaultSnapshot {
     this.checkTree(version); validateVaultPath(path); this.destinationFree(path);
     const parts = path.split('/'); const directories = parts.map((_, i) => parts.slice(0, i + 1).join('/')).filter(path => !existsSync(this.files.absolute(path))).map(path => ({ path, old: false, next: true }));
@@ -297,6 +295,7 @@ export class VaultStore implements PageStore {
     const scan = this.files.list();
     if (folder && !scan.folders.includes(from)) throw new NotFoundError('Папка не найдена');
     if (from === path) return { ...(folder ? {} : { document: this.document(from) }), moved: [], updatedPaths: [], treeVersion: this.treeVersion() };
+    if (folder && scan.hiddenEntries.some(entry => entry.startsWith(from + '/'))) throw new InvalidRequestError('Папка содержит скрытые пути');
     const caseOnly = folded(from) === folded(path);
     if (!caseOnly) this.destinationFree(path, from);
     else if ([...scan.files, ...scan.folders].includes(path)) this.destinationFree(path, from);
@@ -304,13 +303,28 @@ export class VaultStore implements PageStore {
     const folders = folder ? scan.folders.filter(dir => dir === from || dir.startsWith(from + '/')) : [];
     if (scan.problems.some(problem => problem.path === from || problem.path.startsWith(from + '/'))) throw new InvalidRequestError('Небезопасное дерево');
     const mapping = new Map([...selected, ...folders].map(old => [old, path + old.slice(from.length)]));
+    const directorySet = new Set(folders);
+    this.files.assertAuthorable([...mapping].map(([old, path]) => ({ path, directory: directorySet.has(old) })));
     const writes: FileWrite[] = []; const guards: ParsedVaultDocument[] = []; const updatedPaths: string[] = [];
     const previous = new Map([...this.pages].map(([id, item]) => [id, item.document.version]));
     for (const file of scan.files) {
       const parsed = this.pages.get(file); const to = mapping.get(file) ?? file; const bytes = this.files.readBytes(file).bytes;
-      const candidate = file === from && options.source !== undefined ? this.parse(options.source, file).document : parsed?.document;
-      const links = candidate && candidate !== parsed?.document ? resolveLinks(candidate, [...this.pages.values()].map(item => item.document), 0, scan.files) : this.links.get(file) ?? [];
-      const source = candidate && file.endsWith('.md') ? rewritePaths(candidate, links, mapping) : bytes;
+      const candidate = file === from && options.source !== undefined ? this.parse(options.source, file) : parsed;
+      let links = candidate && candidate !== parsed ? resolveLinks(candidate.document, [...this.pages.values()].map(item => item.document), 0, scan.files) : this.links.get(file) ?? [];
+      if (candidate && to !== file && scan.ignoredFolders.length) {
+        const embedded = new Map<number, string>();
+        for (const span of candidate.spans) {
+          if (span.destinationStart !== undefined && span.assetPath && ignoredPath(scan.rules, span.assetPath, false)) {
+            embedded.set(span.destinationStart, span.assetPath);
+          }
+        }
+        // Скрытая диаграмма не участвует в графе, но её встраивание сохраняет путь при переносе заметки.
+        links = links.map(link => {
+          const assetPath = embedded.get(link.start);
+          return assetPath ? { ...link, targetPageId: assetPath } : link;
+        });
+      }
+      const source = candidate && file.endsWith('.md') ? rewritePaths(candidate.document, links, mapping) : bytes;
       if (to === file && (typeof source !== 'string' || source === parsed?.document.source)) continue;
       if (caseOnly && to !== file) {
         if (typeof source === 'string' && source !== parsed?.document.source) writes.push({ path: to, expected: bytes, source });
@@ -330,26 +344,39 @@ export class VaultStore implements PageStore {
   deleteFolder(path: string, version: string, recursive = false): VaultSnapshot {
     this.checkTree(version); validateVaultPath(path); const scan = this.files.list();
     if (!scan.folders.includes(path)) throw new NotFoundError('Папка не найдена');
+    if (scan.hiddenEntries.some(entry => entry.startsWith(path + '/'))) throw new InvalidRequestError('Папка содержит скрытые пути');
     const files = scan.files.filter(file => file.startsWith(path + '/')); const folders = scan.folders.filter(dir => dir === path || dir.startsWith(path + '/'));
     if (scan.problems.some(problem => problem.path.startsWith(path + '/'))) throw new InvalidRequestError('Небезопасное дерево');
     if (!recursive && (files.length || folders.length > 1)) throw new AppError('conflict', 'Папка не пуста', 409, { currentRevision: 0, reason: 'destination_exists', paths: [path] });
-    const trash = '.livenote/trash/' + randomUUID() + '/';
-    const writes = files.flatMap(file => { const source = this.files.readBytes(file).bytes; return [{ path: trash + file, expected: null, source }, { path: file, expected: source, source: null }]; });
+    const writes = files.map(file => ({ path: file, expected: this.files.readBytes(file).bytes, source: null }));
     this.checkTree(version);
-    this.publish(writes, [], [...folders.map(path => ({ path: trash + path, old: false, next: true })), ...folders.map(path => ({ path, old: true, next: false }))]);
+    this.publish(writes, [], folders.map(path => ({ path, old: true, next: false })));
     return this.snapshot();
   }
   search(q = '', tag?: string): VaultSearchHit[] {
     if (q.length > 500) throw new InvalidRequestError('Поиск ограничен 500 символами');
     this.reconcile(); const tokens = folded(q.trim()).split(/\s+/).filter(Boolean); const hits: VaultSearchHit[] = [];
-    for (const { document: d } of this.pages.values()) {
+    for (const { document: d, prose: parsedProse } of this.pages.values()) {
       if (!d.path.endsWith('.md') || (tag !== undefined && !d.tags.includes(tag))) continue;
-      const prose = markdownProse(d.source).replace(/\s+/g, ' '); const haystack = folded([d.page.title, ...d.aliases, d.path, prose].join('\n'));
+      const prose = parsedProse.replace(/\s+/g, ' '); const haystack = folded([d.page.title, ...d.aliases, d.path, prose].join('\n'));
       if (tokens.every(token => haystack.includes(token))) hits.push({ pageId: d.path, title: d.page.title, path: d.path, tags: d.tags, excerpt: prose.slice(0, 240) });
     }
     return hits.sort((a, b) => a.path.localeCompare(b.path)).slice(0, 100);
   }
-  setRenderConfirmation(id: string, blockId: string, revision: number, ok: boolean, error: string | null): void { this.renders.set(id + '\0' + revision + '\0' + blockId, { revision, ok, error }); }
+  setRenderConfirmation(id: string, blockId: string, revision: number, ok: boolean, error: string | null): void {
+    const renders = this.renders.get(id) ?? new Map();
+    renders.set(revision + '\0' + blockId, { revision, ok, error });
+    this.renders.set(id, renders);
+    const page = this.pages.get(id)?.document.page;
+    if (page?.revision === revision) this.applyRenders(page);
+  }
+  private applyRenders(page: PageFull): void {
+    const renders = this.renders.get(page.id);
+    for (const block of page.blocks) {
+      const render = renders?.get(page.revision + '\0' + block.id);
+      if (render) { block.renderedRevision = render.revision; block.renderOk = render.ok; block.renderError = render.error; }
+    }
+  }
   private receiptPath(key: string): string { return `.livenote/requests/${sha256(key)}.json`; }
   replay<T>(key: string, input: unknown): T | undefined {
     const source = this.files.optional(this.receiptPath(key)); if (source === null) return undefined;
