@@ -20,3 +20,4 @@ src/web/public/drawio.backup-*/
 /src-tauri/crates/*/target/
 /src-tauri/crates/*/Cargo.lock
 /src-tauri/gen/schemas/
+.agents
