@@ -3,6 +3,7 @@ import { Button } from '@heroui/react';
 import type { Block } from '../../shared/types';
 import { ApiError, downloadBlockPng, updateBlock } from '../api';
 import { diagramFilename, downloadDiagramSvg, downloadTextFile } from '../svgDownload';
+import { notifyDiagramDownload } from '../diagrams/diagramDownload';
 import { useConfirm } from './ConfirmDialog';
 import { useDrawioFrame, DRAWIO_MODAL_EVENT } from './useDrawioFrame';
 import type { DiagramCommit } from '../diagrams/types';
@@ -99,20 +100,18 @@ export function DrawioFullscreen({ block, pageTitle, pageRevision, onSaved, onCl
 
   const download = async (format: 'drawio' | 'svg' | 'png'): Promise<void> => {
     setSaveError(null);
-    try {
+    const filename = diagramFilename(pageTitle, block.id, format);
+    await notifyDiagramDownload(filename, async () => {
       if (format === 'png') {
-        await downloadBlockPng(block.pageId, block.id, diagramFilename(pageTitle, block.id, 'png'));
-        return;
+        return downloadBlockPng(block.pageId, block.id, filename);
       }
       const source = await exportDiagram(format === 'drawio' ? 'xml' : 'svg', true);
       if (format === 'drawio') {
-        downloadTextFile(source, diagramFilename(pageTitle, block.id, 'drawio'), 'application/xml');
-      } else {
-        downloadDiagramSvg(source, diagramFilename(pageTitle, block.id, 'svg'));
+        downloadTextFile(source, filename, 'application/xml');
+        return;
       }
-    } catch (downloadError) {
-      setSaveError(downloadError instanceof Error ? downloadError.message : String(downloadError));
-    }
+      return downloadDiagramSvg(source, filename);
+    });
   };
 
   useEffect(() => {

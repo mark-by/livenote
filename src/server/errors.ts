@@ -18,6 +18,10 @@ export class AppError extends Error {
   }
 }
 
+export function serverClosing(): AppError {
+  return new AppError('server_closing', 'Сервер завершает работу', 503);
+}
+
 /** Сущность не найдена (страница/блок). */
 export class NotFoundError extends AppError {
   constructor(message: string, details?: unknown) {

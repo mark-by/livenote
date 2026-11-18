@@ -1,0 +1,31 @@
+[package]
+name = "vault-files"
+version = "0.1.0"
+description = "Файловое хранилище LiveNote"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+rustix = { version = "1.1", features = ["fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+let_underscore_must_use = "deny"
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }

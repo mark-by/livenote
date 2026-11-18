@@ -6,6 +6,7 @@
  * ошибки AppError пробрасываются в общий error-handler (next).
  */
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { MERMAID_THEMES } from '../shared/types.js';
 import type { DiagramValidation, PageFull, WriteLayout } from '../shared/types.js';
 import { exportAllMarkdown, exportPageMarkdown } from './export.js';
 import { InvalidRequestError, NotFoundError } from './errors.js';
@@ -218,7 +219,7 @@ export function createRestRouter(deps: ServerDeps): Router {
     })
   );
 
-  // DELETE /pages/:pageId — перенос в корзину; expectedRevision из тела или query.
+  // DELETE /pages/:pageId — окончательное удаление; expectedRevision из тела или query.
   router.delete(
     '/pages/:pageId',
     wrap((req, res) => {
@@ -305,7 +306,13 @@ export function createRestRouter(deps: ServerDeps): Router {
     wrap(async (req, res) => {
       const pageId = requireParam(req.params.pageId, 'pageId');
       const blockId = requireParam(req.params.blockId, 'blockId');
-      const result = await service.checkDiagram(pageId, blockId, { mode: 'render', includeImage: true });
+      const theme = MERMAID_THEMES.find((candidate) => candidate === req.query.theme);
+      if (req.query.theme !== undefined && theme === undefined) {
+        throw new InvalidRequestError('Неизвестная тема Mermaid');
+      }
+      const result = await service.checkDiagram(pageId, blockId, {
+        mode: 'render', includeImage: true, ...(theme === undefined ? {} : { theme })
+      });
       const pngBase64 = result.render?.pngBase64;
       if (pngBase64 === undefined) {
         throw new InvalidRequestError(

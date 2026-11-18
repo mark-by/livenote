@@ -15,8 +15,15 @@ export interface BlockSpan {
   assetPath?: string; destinationStart?: number; destinationEnd?: number; title?: string | null;
 }
 export interface ParsedVaultDocument {
-  document: VaultDocument; spans: BlockSpan[]; bodyStart: number; newline: string; problems: VaultProblem[];
+  document: VaultDocument; spans: BlockSpan[]; bodyStart: number; newline: string; problems: VaultProblem[]; prose: string;
 }
+export type VaultSyntax = {
+  readonly spans: BlockSpan[];
+  readonly problems: VaultProblem[];
+  readonly aliases: string[];
+  readonly tags: string[];
+  readonly prose: string;
+};
 export function hasGitConflict(source: string): boolean {
   return /^<<<<<<<[^\r\n]*\r?$\n[\s\S]*?^=======[ \t]*\r?$\n[\s\S]*?^>>>>>>>[^\r\n]*$/m.test(source);
 }
@@ -69,9 +76,12 @@ function metadata(source: string): { aliases: string[]; tags: string[] } {
 }
 /** Только диапазоны исходной строки; AST никогда не сериализуется обратно. */
 export function parseVaultDocument(source: string, path: string, loadAsset: (path: string) => { source: string; mtimeMs?: number }, stat = { birthtimeMs: 0, mtimeMs: 0 }): ParsedVaultDocument {
+  return materializeVaultDocument(source, path, parseVaultSyntax(source, path), loadAsset, stat);
+}
+
+export function parseVaultSyntax(source: string, path: string): VaultSyntax {
   if (hasGitConflict(source)) throw new DocumentProblem('git_conflict', 'Обнаружен конфликт Git', path);
   const spans: BlockSpan[] = [];
-  const assets = new Map<string, VaultAsset>();
   const problems: VaultProblem[] = [];
   const format = diagramFormat(path);
   const root = fromMarkdown(source);
@@ -146,19 +156,30 @@ export function parseVaultDocument(source: string, path: string, loadAsset: (pat
     }
     if (cursor < source.length) spans.push({ id: '', type: 'markdown', start: cursor, contentStart: cursor, contentEnd: source.length, end: source.length });
   }
+  for (const [position, span] of spans.entries()) span.id = 'span-' + position;
+  const data = metadata(source);
+  const prose = markdownProse(source);
+  const tags = [...new Set([...data.tags, ...[...prose.matchAll(/(?:^|[\s(])#([\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*)/gu)].map(match => match[1] ?? '')])];
+  return { spans, problems, aliases: data.aliases, tags, prose };
+}
+
+export function materializeVaultDocument(source: string, path: string, syntax: VaultSyntax, loadAsset: (path: string) => { source: string; mtimeMs?: number; version?: string }, stat: { readonly birthtimeMs: number; readonly mtimeMs: number }): ParsedVaultDocument {
+  const { spans, aliases, tags, prose } = syntax;
+  const problems = [...syntax.problems];
+  const assets = new Map<string, VaultAsset>();
   let latest = stat.mtimeMs;
   const createdAt = new Date(stat.birthtimeMs || stat.mtimeMs || 0).toISOString();
   const blocks = spans.map((span, position) => {
-    span.id = 'span-' + position;
     let content = source.slice(span.contentStart, span.contentEnd);
     if (span.assetPath) {
       let asset = assets.get(span.assetPath);
       if (!asset) {
-        let loaded: { source: string; mtimeMs?: number } | null = null;
+        let loaded: ReturnType<typeof loadAsset> | null = null;
         try { loaded = loadAsset(span.assetPath); } catch (error) {
-          problems.push({ code: error instanceof DocumentProblem ? error.code : 'missing_asset', path: span.assetPath, pageId: path, blockId: span.id, message: 'Файл диаграммы недоступен' });
+          const code = error instanceof DocumentProblem ? error.code : 'missing_asset';
+          problems.push({ code, path: span.assetPath, pageId: path, blockId: span.id, message: 'Файл диаграммы недоступен' });
         }
-        asset = { path: span.assetPath, type: span.type === 'markdown' ? 'mermaid' : span.type, source: loaded?.source ?? null, version: loaded ? fileVersion(loaded.source) : null };
+        asset = { path: span.assetPath, type: span.type === 'markdown' ? 'mermaid' : span.type, source: loaded?.source ?? null, version: loaded ? (loaded.version ?? fileVersion(loaded.source)) : null };
         latest = Math.max(latest, loaded?.mtimeMs ?? 0); assets.set(span.assetPath, asset);
       }
       content = asset.source ?? '';
@@ -167,13 +188,10 @@ export function parseVaultDocument(source: string, path: string, loadAsset: (pat
   });
   const updatedAt = new Date(latest).toISOString();
   for (const block of blocks) block.updatedAt = updatedAt;
-  const data = metadata(source);
-  const prose = markdownProse(source);
-  const tags = [...new Set([...data.tags, ...[...prose.matchAll(/(?:^|[\s(])#([\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*)/gu)].map(match => match[1] ?? '')])];
   const tokens = fingerprint(path, source, [...assets.values()]);
   return { document: { page: { id: path, title: posix.basename(path, posix.extname(path)), revision: tokens.revision, createdAt, updatedAt, blocks }, path, source, version: tokens.version,
     spans: spans.map(span => ({ blockId: span.id, type: span.type, from: span.start, to: span.end, sourceFrom: span.contentStart, sourceTo: span.contentEnd, ...(span.assetPath ? { assetPath: span.assetPath } : {}) })),
-    aliases: data.aliases, tags, assets: [...assets.values()], links: [], backlinks: [] }, spans, bodyStart: 0, newline: source.includes('\r\n') ? '\r\n' : '\n', problems };
+    aliases: [...aliases], tags: [...tags], assets: [...assets.values()], links: [], backlinks: [] }, spans, bodyStart: 0, newline: source.includes('\r\n') ? '\r\n' : '\n', problems, prose };
 }
 export function blockContent(type: BlockType, source: string, newline: string, assetUrl?: string, title?: string | null): string {
   switch (type) {

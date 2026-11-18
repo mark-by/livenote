@@ -115,7 +115,7 @@ export interface DiagramValidator {
   /** Полный рендеринг; pngBase64 — при includeImage. */
   render(
     source: string,
-    options?: { includeImage?: boolean }
+    options?: { includeImage?: boolean; theme?: MermaidTheme }
   ): Promise<{ validation: DiagramValidation; render?: DiagramRenderResult }>;
 }
 
@@ -212,9 +212,16 @@ export const MERMAID_THEMES = [
 
 export type MermaidTheme = (typeof MERMAID_THEMES)[number];
 
+export interface VaultDescriptor {
+  readonly id: string;
+  readonly name: string;
+}
+
 /** Тело GET /api/config — настройки, нужные UI до аутентификации. */
 export interface ApiConfig {
   storage?: 'vault' | 'sqlite';
+  readonly defaultVaultId?: string;
+  readonly folderPickerAvailable?: boolean;
   version: string;
   tokenRequired: boolean;
   mermaidTheme: MermaidTheme;
@@ -341,6 +348,7 @@ export interface VaultDocument {
 }
 
 export interface VaultSnapshot {
+  readonly vaultName?: string;
   pages: VaultPageSummary[];
   files: Array<{ path: string; kind: 'markdown' | DiagramFormat; title: string; version: string; revision: number }>;
   folders: string[];

@@ -4,23 +4,15 @@
   "description": "Локальный визуальный блокнот для совместной работы с AI-агентом: страницы из Markdown- и Mermaid-блоков, MCP-инструменты, живое обновление через SSE",
   "type": "module",
   "license": "MIT",
-  "bin": {
-    "livenote": "./bin/livenote.js"
-  },
-  "main": "dist/server/index.js",
-  "files": [
-    "bin",
-    "dist",
-    "README.md"
-  ],
+  "private": true,
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "prebuild": "node scripts/prepare-drawio.mjs",
     "build": "tsc -p tsconfig.json && vite build",
-    "start": "node dist/server/index.js",
-    "dev:server": "tsx watch src/server/index.ts",
+    "desktop:web": "node scripts/prepare-drawio.mjs && vite build --mode desktop",
+    "tauri": "tauri",
     "dev:web": "vite",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
@@ -47,11 +39,14 @@
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-markdown": "^6.3.2",
     "@codemirror/language": "^6.11.3",
+    "@codemirror/language-data": "^6.5.2",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.1",
     "@lezer/common": "^1.2.3",
+    "@lezer/highlight": "^1.2.5",
     "@replit/codemirror-vim": "^6.3.0",
     "@tailwindcss/vite": "^4.3.5",
+    "@tauri-apps/cli": "2.12.5",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^4.17.23",
     "@types/node": "^24.7.0",

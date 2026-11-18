@@ -365,7 +365,7 @@ export function LegacyApp(): React.JSX.Element {
     }
     void confirm({
       title: 'Удалить страницу',
-      message: `Удалить страницу «${summary.title}»? Она переедет в корзину.`,
+      message: `Страница «${summary.title}» и её содержимое будут удалены окончательно.`,
       confirmLabel: 'Удалить',
       danger: true
     })

@@ -1,6 +1,8 @@
-import { existsSync } from 'node:fs';
-import { createApp } from './app.js';
-import { DEFAULT_DB, DEFAULT_VAULT, parseConfig } from './config.js';
+import { once } from 'node:events';
+import { existsSync, writeSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { createApp, type RunningApp } from './app.js';
+import { DEFAULT_DB, parseConfig } from './config.js';
 import { migrateFromVault, migrateVault } from './vaultMigration.js';
 import { MERMAID_THEMES } from '../shared/types.js';
 
@@ -10,7 +12,7 @@ const USAGE = `LiveNote — локальный визуальный блокно
   livenote migrate --db <SQLite> --vault <новый-каталог>
   livenote migrate --from-vault <старый-vault> --vault <новый-каталог>
 
-По умолчанию: ${DEFAULT_VAULT}
+По умолчанию: текущий каталог.
 --vault / LIVENOTE_VAULT: Markdown vault.
 --db / LIVENOTE_DB: совместимый SQLite-режим.
 --theme / LIVENOTE_THEME: ${MERMAID_THEMES.join(', ')}
@@ -33,29 +35,90 @@ async function main(): Promise<void> {
     console.log(`Найдена прежняя база: ${DEFAULT_DB}`);
     console.log(`Для явной миграции: livenote migrate --db ${JSON.stringify(DEFAULT_DB)} --vault ${JSON.stringify(config.vaultPath + '-migrated')}`);
   }
-  const running = await createApp(config);
+  const desktop = process.env['LIVENOTE_DESKTOP_CHILD'] === '1';
   const url = `http://127.0.0.1:${config.port}`;
-  const server = running.app.listen(config.port, config.host, () => {
+  const shutdown = new AbortController();
+  const stopped = once(shutdown.signal, 'abort');
+  const requestShutdown = (): void => {
+    if (shutdown.signal.aborted) return;
+    shutdown.abort();
+    if (desktop) {
+      // После гибели GUI закрытие stdin заменяет сигнал и ограничивает время завершения.
+      setTimeout(() => process.exit(1), 10_000).unref();
+    }
+  };
+  const reportFailure = (error: unknown): void => {
+    console.error('[livenote] ошибка сервера:', error);
+    process.exitCode = 1;
+    requestShutdown();
+  };
+  let running: RunningApp | undefined;
+  const server = createServer((req, res) => {
+    if (running === undefined) {
+      res.writeHead(503);
+      res.end();
+      return;
+    }
+    running.app(req, res);
+  });
+
+  process.on('SIGINT', requestShutdown);
+  process.on('SIGTERM', requestShutdown);
+  if (desktop) {
+    process.stdin.once('end', requestShutdown);
+    process.stdin.on('error', reportFailure);
+    process.stdin.resume();
+  }
+  try {
+    // Занимаем порт до открытия хранилища и запуска валидаторов.
+    server.listen(config.port, config.host);
+    try {
+      await once(server, 'listening', { signal: shutdown.signal });
+    } catch (error) {
+      if (shutdown.signal.aborted && error instanceof Error && error.name === 'AbortError') return;
+      if (desktop && error instanceof Error && 'code' in error && error.code === 'EADDRINUSE') {
+        writeSync(1, 'LIVENOTE_DESKTOP/1 PORT_IN_USE\n');
+      }
+      throw error;
+    }
+    server.on('error', reportFailure);
+    if (shutdown.signal.aborted) return;
+    running = await createApp(config);
+    if (shutdown.signal.aborted) return;
+
+    if (desktop) {
+      // Только потомок, который занял порт и подготовил Express, сообщает о готовности.
+      writeSync(1, 'LIVENOTE_DESKTOP/1 READY\n');
+    }
     console.log(`LiveNote запущен: ${url}`);
     console.log(`  MCP: ${url}/mcp (Streamable HTTP)`);
     console.log(`  Хранилище: ${config.vaultPath ?? config.dbPath}`);
     console.log(`  Аутентификация: ${config.token ? 'включена' : 'отключена'}`);
-  });
-  server.on('error', async error => { console.error(error); await running.close(); process.exitCode = 1; });
-  if (config.openBrowser) {
-    try { await (await import('open')).default(url); }
-    catch (error) { console.warn('Не удалось открыть браузер:', error); }
+    if (config.openBrowser) {
+      // Открытие браузера не задерживает завершение сервера по сигналу.
+      void import('open').then(({ default: open }) => open(url)).catch(error => {
+        console.warn('Не удалось открыть браузер:', error);
+      });
+    }
+    await stopped;
+  } finally {
+    try {
+      // До окончания операций валидатора draw.io сервер продолжает отдавать статику.
+      await running?.close();
+    } finally {
+      await new Promise<void>(resolve => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
+      process.off('SIGINT', requestShutdown);
+      process.off('SIGTERM', requestShutdown);
+      if (desktop) {
+        process.stdin.off('end', requestShutdown);
+        process.stdin.off('error', reportFailure);
+        process.stdin.pause();
+      }
+    }
   }
-  let closing = false;
-  const shutdown = async (): Promise<void> => {
-    if (closing) return;
-    closing = true;
-    server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
-    await running.close();
-  };
-  process.on('SIGINT', () => { void shutdown(); });
-  process.on('SIGTERM', () => { void shutdown(); });
 }
 
 main().catch(error => { console.error('LiveNote завершился с ошибкой:', error); process.exitCode = 1; });

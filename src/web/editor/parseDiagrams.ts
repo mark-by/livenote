@@ -1,5 +1,8 @@
+import type { Text } from '@codemirror/state';
 import type { EditorDiagram, SourceRange } from './types';
-import { markdownNodes } from './markdownNodes';
+import { markdownDocument } from './markdownNodes';
+
+const diagramsByDoc = new WeakMap<Text, readonly EditorDiagram[]>();
 
 function externalDiagram(target: string): EditorDiagram['format'] | undefined {
   let destination: string;
@@ -18,12 +21,17 @@ function externalDiagram(target: string): EditorDiagram['format'] | undefined {
   }
 }
 
-export function parseEditorDiagrams(source: string): readonly EditorDiagram[] {
-  const nodes = markdownNodes(source);
-  const definitions = new Map<string, string>();
-  for (const { node } of nodes) {
-    if (node.type === 'definition') definitions.set(node.identifier.toUpperCase(), node.url);
-  }
+export function parseEditorDiagrams(doc: Text | string): readonly EditorDiagram[] {
+  if (typeof doc === 'string') return collectDiagrams(doc);
+  const cached = diagramsByDoc.get(doc);
+  if (cached) return cached;
+  const diagrams = collectDiagrams(doc);
+  diagramsByDoc.set(doc, diagrams);
+  return diagrams;
+}
+
+function collectDiagrams(doc: Text | string): readonly EditorDiagram[] {
+  const { source, nodes, definitions } = markdownDocument(doc);
   const diagrams: EditorDiagram[] = [];
   const excluded: SourceRange[] = [];
   for (const { node, from, to } of nodes) {

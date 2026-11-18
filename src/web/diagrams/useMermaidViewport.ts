@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import mermaid from 'mermaid';
-import { ensureMermaidInitialized, useThemeVersion } from '../mermaidInit';
+import { ensureMermaidInitialized, nextMermaidRenderId, useThemeVersion } from '../mermaidInit';
 import { staticSvgMarkup } from '../svgDownload';
 import type { DiagramEditor } from '../components/useDiagramEditor';
 
@@ -16,7 +16,6 @@ export function useMermaidViewport({ blockId, editor, editorRef }: MermaidViewpo
   const canvasRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef('');
-  const idRef = useRef(0);
   const transform = useRef({ x: 0, y: 0, s: 1 });
   const drag = useRef<{ x: number; y: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +102,7 @@ export function useMermaidViewport({ blockId, editor, editorRef }: MermaidViewpo
         if (disposed) return;
         await mermaid.parse(editor.source);
         if (disposed) return;
-        const { svg } = await mermaid.render(`livenote-fs-${blockId}-${++idRef.current}`, editor.source);
+        const { svg } = await mermaid.render(nextMermaidRenderId(), editor.source);
         if (disposed) return;
         host.innerHTML = svg;
         editorRef.current.decorate(host);

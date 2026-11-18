@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LiveNote",
+  "version": "../package.json",
+  "identifier": "ru.livenote.desktop",
+  "build": {
+    "beforeDevCommand": {
+      "script": "npm run desktop:web",
+      "wait": true
+    },
+    "beforeBuildCommand": "npm run desktop:web"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "capabilities": []
+    }
+  },
+  "bundle": {
+    "active": true,
+    "resources": {
+      "../dist/web/": "web/"
+    }
+  }
+}

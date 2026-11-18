@@ -6,7 +6,6 @@ import type { AppConfig, MermaidTheme } from '../shared/types.js';
 import { InvalidRequestError } from './errors.js';
 
 export const DEFAULT_DB = join(homedir(), '.livenote', 'livenote.sqlite');
-export const DEFAULT_VAULT = join(homedir(), '.livenote', 'vault');
 
 export function parseConfig(args: string[], environment: NodeJS.ProcessEnv = process.env, cwd = process.cwd()):
   { command: 'serve'; config: AppConfig } | { command: 'migrate'; dbPath: string; vaultPath: string } | { command: 'migrate-vault'; sourcePath: string; vaultPath: string } | { command: 'help' } {
@@ -47,15 +46,16 @@ export function parseConfig(args: string[], environment: NodeJS.ProcessEnv = pro
     if (vaultEnv && dbEnv) throw new InvalidRequestError('LIVENOTE_VAULT и LIVENOTE_DB нельзя использовать вместе');
     if (vaultEnv) vaultPath = path(vaultEnv, 'LIVENOTE_VAULT');
     else if (dbEnv) dbPath = path(dbEnv, 'LIVENOTE_DB');
-    else vaultPath = DEFAULT_VAULT;
+    else vaultPath = resolve(cwd);
   }
   const rawPort = values.port ?? environment['LIVENOTE_PORT'] ?? '4317';
   const port = Number(rawPort);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new InvalidRequestError(`Некорректный порт: ${rawPort}`);
-  const theme = values.theme ?? environment['LIVENOTE_THEME'] ?? 'default';
-  if (!MERMAID_THEMES.includes(theme as MermaidTheme)) throw new InvalidRequestError(`Неизвестная тема mermaid: "${theme}"`);
+  const rawTheme = values.theme ?? environment['LIVENOTE_THEME'] ?? 'default';
+  const theme: MermaidTheme | undefined = MERMAID_THEMES.find(candidate => candidate === rawTheme);
+  if (theme === undefined) throw new InvalidRequestError(`Неизвестная тема mermaid: "${rawTheme}"`);
   return { command: 'serve', config: {
     port, host: '127.0.0.1', dbPath, ...(vaultPath !== undefined ? { vaultPath } : {}),
-    token: environment['LIVENOTE_TOKEN']?.trim() || null, openBrowser: values.open, mermaidTheme: theme as MermaidTheme
+    token: environment['LIVENOTE_TOKEN']?.trim() || null, openBrowser: values.open, mermaidTheme: theme
   } };
 }

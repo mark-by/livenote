@@ -14,6 +14,7 @@ import type {
   DiagramValidator,
   LiveEvent,
   LiveEventName,
+  MermaidTheme,
   PageFull,
   PageSummary,
   WriteBlockResult,
@@ -139,7 +140,7 @@ export class NoteService {
 
   deletePage(pageId: string, expectedRevision: number, expectedVersion?: string): void {
     if (this.store instanceof VaultStore) this.store.check(pageId, expectedRevision, expectedVersion);
-    this.store.softDeletePage(pageId, expectedRevision);
+    this.store.deletePage(pageId, expectedRevision);
     // Ревизию для события берём прежнюю: страница исчезла из активного набора.
     this.publish('page.deleted', pageId, expectedRevision);
   }
@@ -427,7 +428,7 @@ export class NoteService {
   async checkDiagram(
     pageId: string,
     blockId: string,
-    options: { revision?: number; mode?: 'syntax' | 'render'; includeImage?: boolean } = {}
+    options: { revision?: number; mode?: 'syntax' | 'render'; includeImage?: boolean; theme?: MermaidTheme } = {}
   ): Promise<CheckDiagramResult> {
     const page = this.getPage(pageId);
     const block = page.blocks.find((candidate) => candidate.id === blockId);
@@ -475,7 +476,9 @@ export class NoteService {
     } else if (block.type === 'drawio') {
       result = await this.drawioValidator.render(block.source, renderOptions);
     } else {
-      result = await this.validator.render(block.source, renderOptions);
+      result = await this.validator.render(block.source, { ...renderOptions, ...(
+        options.theme === undefined ? {} : { theme: options.theme }
+      ) });
     }
     const { validation, render } = result;
     return {

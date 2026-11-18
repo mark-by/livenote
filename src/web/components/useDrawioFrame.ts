@@ -35,7 +35,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
   const generationRef = useRef(0);
   const exportNowRef = useRef<((format: ExportFormat, resetEditor: boolean) => Promise<string>) | null>(null);
   const initializedRef = useRef(false);
-  const [ready, setReady] = useState(false);
+  const [readyKey, setReadyKey] = useState<string | null>(null);
   const readyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [previewEnabled, setPreviewEnabled] = useState(() =>
@@ -44,6 +44,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
   const modalOpenRef = useRef(document.querySelector('.drawio-fullscreen__frame') !== null);
   const requestedKeyRef = useRef(frameKey);
   const [loadedFrameKey, setLoadedFrameKey] = useState(frameKey);
+  const ready = readyKey === loadedFrameKey && loadedFrameKey === frameKey;
   xmlRef.current = xml;
   readyRef.current = ready;
   autosaveRef.current = onAutosave;
@@ -72,7 +73,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
     const iframe = iframeRef.current;
     if (!iframe) return;
     if (backgroundPreview && !previewEnabled) {
-      setReady(false);
+      setReadyKey(null);
       return;
     }
     // Уже загруженный preview остаётся живым при открытии fullscreen.
@@ -84,7 +85,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
     let finishLoad: (() => void) | null = null;
     let failLoad: ((reason: Error) => void) | null = null;
     initializedRef.current = false;
-    setReady(false);
+    setReadyKey(null);
     setError(null);
 
     const rejectPending = (reason: Error): void => {
@@ -102,7 +103,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
       rejectPending(reason);
       failLoad?.(reason);
       failLoad = null;
-      setReady(false);
+      setReadyKey(null);
       setError(reason.message);
       // iframe принадлежит React: не удаляем DOM-узел, который может быть
       // повторно использован следующим effect (в том числе в StrictMode).
@@ -163,7 +164,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
           finishLoad = () => {
             failLoad = null;
             window.clearTimeout(initTimer);
-            if (!disposed) setReady(true);
+            if (!disposed) setReadyKey(loadedFrameKey);
             resolve();
           };
           try {
@@ -250,8 +251,8 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
   }, [loadedFrameKey, backgroundPreview, previewEnabled]);
 
   const exportDiagram = (format: ExportFormat, resetEditor = false): Promise<string> => {
+    const exportNow = exportNowRef.current;
     const operation = queueRef.current.then(() => {
-      const exportNow = exportNowRef.current;
       return exportNow
         ? exportNow(format, resetEditor)
         : Promise.reject(messageError('редактор закрыт'));
@@ -260,5 +261,5 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
     return operation;
   };
 
-  return { iframeRef, ready: ready && loadedFrameKey === frameKey, error, exportDiagram };
+  return { iframeRef, ready, error, exportDiagram };
 }

@@ -183,7 +183,7 @@ export class NoteStore implements PageStore {
     }));
   }
 
-  /** Страница целиком; undefined — не найдена или в корзине. */
+  /** Страница целиком; старые записи с deleted_at не возвращаются. */
   getPage(pageId: string): PageFull | undefined {
     const page = this.db
       .prepare(
@@ -246,14 +246,14 @@ export class NoteStore implements PageStore {
     return this.requirePage(id);
   }
 
-  /** Перенос в корзину: содержимое остаётся в БД. */
-  softDeletePage(pageId: string, expectedRevision: number): void {
+  /** Удаляет страницу и её блоки из БД. */
+  deletePage(pageId: string, expectedRevision: number): void {
     const tx = this.db.transaction(() => {
       const page = this.lockPage(pageId);
       this.checkRevision(page, expectedRevision);
       this.db
-        .prepare(`UPDATE pages SET deleted_at = ?, updated_at = ? WHERE id = ?`)
-        .run(this.now(), this.now(), pageId);
+        .prepare(`DELETE FROM pages WHERE id = ?`)
+        .run(pageId);
     });
     tx();
   }

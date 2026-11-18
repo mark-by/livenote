@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
@@ -34,6 +34,27 @@ async function document(id: string): Promise<VaultDocument> { const result = awa
 async function create(title: string, path: string, source = '') { const result = await api('/pages', 'POST', { title, path, source }); assert.ok(result.page); return result.page; }
 const tokens = (d: VaultDocument) => ({ expectedRevision: d.page.revision, expectedVersion: d.version });
 async function save(d: VaultDocument, source: string) { const result = await api(route(d.path) + '/document', 'PUT', { ...tokens(d), source }); assert.ok(result.document); return result.document; }
+
+test('HTTP deletion removes document and unused diagram files without creating trash', async () => {
+  // Arrange: документ владеет единственной вставкой схемы.
+  const page = await create('Delete', 'Delete/Note.md');
+  const before = await document(page.id);
+  const assetPath = 'Delete/Flow.drawio';
+  const saved = await api(route(page.id) + '/document', 'PUT', {
+    ...tokens(before), source: '![Схема](Flow.drawio)',
+    assets: [{ path: assetPath, source: xml, expectedVersion: null }]
+  });
+  assert.ok(saved.document);
+
+  // Act: удаляем документ через публичный API.
+  await api(route(page.id), 'DELETE', tokens(saved.document), 204);
+
+  // Assert: файл документа и неиспользуемая схема отсутствуют на диске.
+  await api(route(page.id) + '/document', 'GET', undefined, 404);
+  assert.equal(existsSync(join(root, 'vault', page.id)), false);
+  assert.equal(existsSync(join(root, 'vault', assetPath)), false);
+  assert.equal(existsSync(join(root, 'vault/.livenote/trash')), false);
+});
 
 test('native HTTP preserves plain source no-op bytes and rejects invalid changed diagrams atomically', async () => {
   const page = await create('API', 'Nested/API.md'); const before = await document(page.id);

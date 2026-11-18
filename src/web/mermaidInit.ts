@@ -31,7 +31,12 @@ let serverTheme: MermaidTheme = 'default';
 /** Действующая тема: пользовательская переопределённая или серверная. */
 let activeTheme: MermaidTheme = 'default';
 let themeVersion = 0;
+let renderId = 0;
 const listeners = new Set<() => void>();
+
+export function nextMermaidRenderId(): string {
+  return `livenote-render-${++renderId}`;
+}
 
 function loadOverride(): MermaidTheme | null {
   try {
