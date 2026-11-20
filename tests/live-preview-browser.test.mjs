@@ -29,8 +29,9 @@ function Diagram({diagram}) {
 }
 const renderDiagram=diagram=><Diagram diagram={diagram}/>;
 function Fixture() {
-  const [source,setSource]=useState(new URLSearchParams(location.search).get('source')??'');
+  const [source,setSource]=useState(window.initialSource);
   const [vimEnabled,setVim]=useState(false);
+  const [vimMode,setVimMode]=useState('normal');
   const [opened,setOpened]=useState([]);
   const [selection,setSelection]=useState({from:0,to:0});
   const [context,setContext]=useState(null);
@@ -40,9 +41,10 @@ function Fixture() {
     <button onClick={()=>setVim(value=>!value)} aria-pressed={vimEnabled}>Vim</button>
     <button onClick={()=>setReadOnly(value=>!value)} aria-pressed={readOnly}>Только чтение</button>
     <LivePreviewEditor ref={editor} source={source} onChange={setSource}
-      renderDiagram={renderDiagram} vimEnabled={vimEnabled} readOnly={readOnly}
+      renderDiagram={renderDiagram} vimEnabled={vimEnabled} onVimModeChange={setVimMode} readOnly={readOnly}
       onOpenLink={target=>setOpened(value=>[...value,target])} onSelectionChange={setSelection}
       onContextMenu={setContext}/>
+    {vimEnabled && <output>Vim · {vimMode[0].toUpperCase() + vimMode.slice(1)}</output>}
     <output hidden data-source>{source}</output>
     <output hidden data-opened>{JSON.stringify(opened)}</output>
     <output hidden data-selection>{JSON.stringify(selection)}</output>
@@ -75,7 +77,8 @@ async function fixture(t, source) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   t.after(() => context.close());
   const page = await context.newPage();
-  await page.goto(`${base}?source=${encodeURIComponent(source)}`);
+  await page.addInitScript(value => { window.initialSource = value; }, source);
+  await page.goto(base);
   await expect(page.getByRole('textbox', { name: 'Текст заметки' })).toBeVisible();
   return page;
 }
@@ -88,6 +91,43 @@ test('Markdown-таблица отображается как таблица, е
   await expect(page.getByRole('columnheader', { name: 'Сценарий' })).toBeVisible();
   await expect(page.getByRole('gridcell', { name: 'mid' })).toBeVisible();
   await expect(page.locator('[data-source]')).toHaveText(source);
+});
+
+test('Таблица не исчезает и не меняет высоту при быстром возврате вверх', { timeout }, async t => {
+  // Arrange: таблица с переносами текста, которую редактор может выгрузить при прокрутке.
+  const rows = Array.from({ length: 24 }, (_, index) =>
+    `| Строка ${index + 1} | ${'Описание значения в ячейке. '.repeat(9)}|`);
+  const tail = Array.from({ length: 240 }, (_, index) => `Текст после таблицы ${index + 1}`);
+  const source = ['Вступление', '', '| Поле | Описание |', '| --- | --- |', ...rows, '', ...tail].join('\n');
+  const page = await fixture(t, source);
+  const grid = page.getByRole('grid', { name: 'Таблица Markdown' });
+  await expect(grid.getByRole('row')).toHaveCount(rows.length + 1);
+  const widget = page.locator('.lp-table');
+  const height = await widget.evaluate(element => element.getBoundingClientRect().height);
+  const scroller = page.locator('.cm-scroller');
+  await scroller.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  await expect(widget).toHaveCount(0);
+
+  // Act: фиксируем высоту и строки в момент повторной вставки, до позднего рендера React.
+  const remount = await scroller.evaluate(element => new Promise(resolve => {
+    const observer = new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (!(node instanceof HTMLElement) || !node.matches('.lp-table') || !node.isConnected) continue;
+        observer.disconnect();
+        resolve({
+          height: node.getBoundingClientRect().height,
+          rows: node.querySelectorAll('[role="row"]').length
+        });
+        return;
+      }
+    });
+    observer.observe(element, { childList: true, subtree: true });
+    element.scrollTop = 0;
+  }));
+
+  // Assert: таблица сразу возвращается целиком, без промежуточного пустого блока.
+  assert.ok(Math.abs(remount.height - height) <= 1, `Высота после возврата: ${remount.height}, до прокрутки: ${height}`);
+  assert.equal(remount.rows, rows.length + 1);
 });
 
 test('Ячейка открывает исходный Markdown и изменение можно отменить', { timeout }, async t => {

@@ -7,7 +7,9 @@ import {
 } from '../api';
 import { connectVaultEvents } from './vaultEvents';
 import { remapPath } from './vaultPaths';
-import { openVaultTab, removeVaultTabs } from './vaultTabState';
+import { remapPanes, resizeSplit } from './vaultPaneState';
+import type { SplitDirection } from './vaultPaneState';
+import { closeVaultPane, focusVaultPane, openVaultTab, removeVaultTabs, splitVaultTab } from './vaultTabState';
 import type { VaultTabState } from './vaultTabState';
 
 const STORAGE_TABS = 'livenote_open_tabs';
@@ -209,6 +211,25 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
 
   const closeTabs = useCallback((ids: readonly string[]): void => { removeTabs(ids, true); }, [removeTabs]);
   const closeTab = useCallback((pageId: string): void => { closeTabs([pageId]); }, [closeTabs]);
+
+  const splitTab = (pageId: string, direction: SplitDirection): void => {
+    const next = splitVaultTab(tabsRef.current, pageId, direction);
+    setTabs(() => next);
+    if (next.activeId !== null && !documentsRef.current[next.activeId]) void loadDocument(next.activeId);
+  };
+  const focusPane = (id: number): void => { setTabs(current => focusVaultPane(current, id)); };
+  const resizePaneSplit = (id: number, percent: number): void => {
+    setTabs(current => {
+      if (!current.layout) return current;
+      const layout = resizeSplit(current.layout, id, percent);
+      return layout === current.layout ? current : { ...current, layout };
+    });
+  };
+  const closePane = (id: number): void => {
+    const next = closeVaultPane(tabsRef.current, id);
+    setTabs(() => next);
+    if (next.activeId !== null && !documentsRef.current[next.activeId]) void loadDocument(next.activeId);
+  };
 
   const refreshSnapshot = useCallback(async (): Promise<VaultSnapshot | undefined> => {
     const request = ++snapshotRequestRef.current;
@@ -453,7 +474,8 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
       reloadPaths.add(nextPath);
     }
     setTabs((previous) => ({
-      openTabs: previous.openTabs.map(remap), activeId: remapId(previous.activeId), previewId: remapId(previous.previewId)
+      openTabs: previous.openTabs.map(remap), activeId: remapId(previous.activeId), previewId: remapId(previous.previewId),
+      ...(previous.layout && { layout: remapPanes(previous.layout, remap) })
     }));
     setHistory((previous) => ({ ...previous, entries: previous.entries.map(remap) }));
     setFragmentTarget((target) => target && { ...target, pageId: remap(target.pageId) });
@@ -552,7 +574,8 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
   return {
     snapshot, documents, drafts, openTabs, activeId, previewId, history, hits, ready, unavailable, busy, error, tokenOpen,
     selectedFolder, fragmentTarget, followTarget, tokenRequired: getToken() === null,
-    openPage, keepTab, closeTab, closeTabs, changeDraft, discardDraft, saveDraft, commitDiagram, setModalOpen, isDirty, move,
+    openPage, keepTab, closeTab, closeTabs, splitTab, focusPane, closePane, resizePaneSplit, paneLayout: tabs.layout,
+    changeDraft, discardDraft, saveDraft, commitDiagram, setModalOpen, isDirty, move,
     openLinkedPage: (pageId: string, fragment?: string) => { setFragmentTarget(fragment ? { pageId, fragment } : null); openPage(pageId); },
     clearFragmentTarget: () => setFragmentTarget(null), clearFollowTarget: () => setFollowTarget(null), setSelectedFolder,
     createDocument, removeDocument, createFolder, moveFolder, removeFolder, search, goBack, goForward, confirmToken,

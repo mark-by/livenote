@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { CloseButton, Dropdown, Label, Tabs } from '@heroui/react';
 import { ArrowLeft, ArrowRight } from '@gravity-ui/icons';
-import { IconButton } from './VaultControls';
+import { copyVaultPath, IconButton } from './VaultControls';
 import type { VaultWorkspace } from './useVaultWorkspace';
 
 export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
@@ -13,6 +13,13 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
   const { openTabs, activeId, snapshot, documents, drafts, history } = workspace;
   const [context, setContext] = useState<{ readonly id: string; readonly x: number; readonly y: number } | null>(null);
   const contextIndex = context === null ? -1 : openTabs.indexOf(context.id);
+  // React Aria требует выбранную вкладку, даже если активная область ещё пуста.
+  const selectedTab = activeId ?? openTabs[0];
+
+  const selectTab = (id: string): void => {
+    workspace.openPage(id);
+    workspace.keepTab(id);
+  };
 
   const runAction = (action: string): void => {
     if (!context || contextIndex < 0) return;
@@ -23,8 +30,10 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
       case 'close-others': workspace.closeTabs(openTabs.filter(tabId => tabId !== id)); break;
       case 'close-left': workspace.closeTabs(openTabs.slice(0, contextIndex)); break;
       case 'close-right': workspace.closeTabs(openTabs.slice(contextIndex + 1)); break;
+      case 'split-right': workspace.splitTab(id, 'right'); break;
+      case 'split-down': workspace.splitTab(id, 'down'); break;
       case 'copy-path':
-        void navigator.clipboard.writeText(id).catch(() => workspace.showError('Не удалось скопировать путь к файлу.'));
+        void copyVaultPath(id, workspace.showError);
         break;
     }
   };
@@ -41,7 +50,10 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
     <div className="vault-document-tabs" onClickCapture={(event) => {
       if (event.target instanceof Element && event.target.closest('.close-button')) return;
       const id = tabAt(event.target)?.dataset.vaultTab;
-      if (id) workspace.keepTab(id);
+      if (id) {
+        if (activeId === null && id === selectedTab) selectTab(id);
+        else workspace.keepTab(id);
+      }
     }} onContextMenu={(event) => {
       const id = tabAt(event.target)?.dataset.vaultTab;
       if (!id) return;
@@ -51,18 +63,17 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
       const tab = tabAt(event.target);
       const id = tab?.dataset.vaultTab;
       if (!tab || !id || event.target !== tab) return;
-      if (event.key === 'Enter' || event.key === ' ') workspace.keepTab(id);
+      if (event.key === 'Enter' || event.key === ' ') {
+        if (activeId === null && id === selectedTab) selectTab(id);
+        else workspace.keepTab(id);
+      }
       if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
         event.preventDefault();
         const rect = tab.getBoundingClientRect();
         setContext({ id, x: rect.left, y: rect.bottom });
       }
     }}>
-    <Tabs aria-label="Открытые документы" selectedKey={activeId ?? undefined} onSelectionChange={(key) => {
-      const id = key.toString();
-      workspace.openPage(id);
-      workspace.keepTab(id);
-    }}>
+    <Tabs aria-label="Открытые документы" selectedKey={selectedTab} onSelectionChange={key => selectTab(key.toString())}>
       <Tabs.ListContainer><Tabs.List aria-label="Открытые документы">{openTabs.map((id) => {
         const title = documents[id]?.page.title ?? snapshot.files.find((file) => file.path === id)?.title ?? id;
         const dirty = drafts[id] && documents[id] && drafts[id].source !== documents[id].source;
@@ -81,6 +92,8 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
         <Dropdown.Item id="close-others" textValue="Закрыть остальные" isDisabled={openTabs.length <= 1}><Label>Закрыть остальные</Label></Dropdown.Item>
         <Dropdown.Item id="close-left" textValue="Закрыть все слева" isDisabled={contextIndex <= 0}><Label>Закрыть все слева</Label></Dropdown.Item>
         <Dropdown.Item id="close-right" textValue="Закрыть все справа" isDisabled={contextIndex >= openTabs.length - 1}><Label>Закрыть все справа</Label></Dropdown.Item>
+        <Dropdown.Item id="split-right" textValue="Split Right"><Label>Split Right</Label></Dropdown.Item>
+        <Dropdown.Item id="split-down" textValue="Split Down"><Label>Split Down</Label></Dropdown.Item>
         <Dropdown.Item id="copy-path" textValue="Скопировать путь"><Label>Скопировать путь</Label></Dropdown.Item>
       </Dropdown.Menu></Dropdown.Popover>
     </Dropdown>

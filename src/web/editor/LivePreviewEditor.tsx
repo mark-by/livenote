@@ -12,6 +12,7 @@ import { diagramField, diagramRenderer, diagramSelection } from './diagramExtens
 import { parseEditorDiagrams } from './parseDiagrams';
 import { parseEditorLinks } from './parseLinks';
 import { tableExtension, tableLinkHandler } from './tableExtension';
+import { stableViewport } from './stableViewport';
 import type { EditorVimMode, LivePreviewEditorProps } from './types';
 import './livePreview.css';
 
@@ -34,7 +35,6 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
   const view = useRef<EditorView | null>(null);
   const current = useRef(props);
   current.current = props;
-  const [mode, setMode] = useState('Обычный ввод');
   const [compartments] = useState(() => ({
     vim: new Compartment(),
     diagrams: new Compartment(),
@@ -75,6 +75,7 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
           history(),
           drawSelection(),
           EditorView.lineWrapping,
+          stableViewport,
           markdown({ base: markdownLanguage, codeLanguages: codeLanguage }),
           syntaxHighlighting(classHighlighter),
           markdownDecorations,
@@ -182,7 +183,6 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
     const updateMode = () => {
       const state = cm?.state.vim;
       const next: EditorVimMode = state?.insertMode ? 'insert' : state?.visualMode ? 'visual' : 'normal';
-      setMode(next[0]?.toUpperCase() + next.slice(1));
       current.current.onVimModeChange?.(next);
     };
     if (props.vimEnabled && cm) {
@@ -190,7 +190,7 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
       cm.on('vim-mode-change', updateMode);
       return () => cm.off('vim-mode-change', updateMode);
     }
-    setMode('Обычный ввод');
+    current.current.onVimModeChange?.('normal');
   }, [props.vimEnabled, compartments]);
 
   return (
@@ -213,9 +213,6 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
       event.preventDefault();
     }}>
       <div className="lp-host" ref={host} />
-      <div className="lp-mode" role="status" aria-live="polite">
-        {props.vimEnabled ? `Vim · ${mode}` : mode}
-      </div>
     </div>
   );
 }

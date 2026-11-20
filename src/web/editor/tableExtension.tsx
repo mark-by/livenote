@@ -3,8 +3,9 @@ import type { ReactNode } from 'react';
 import { EditorState, Facet, StateEffect, StateField } from '@codemirror/state';
 import type { Range } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
-import { Decoration, EditorView, WidgetType } from '@codemirror/view';
+import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
+import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
 import { Table } from '@heroui/react';
@@ -17,8 +18,61 @@ export const tableLinkHandler = Facet.define<(target: string) => void, ((target:
 });
 
 const focusChanged = StateEffect.define<boolean>();
-const roots = new WeakMap<HTMLElement, Root>();
-const observers = new WeakMap<HTMLElement, ResizeObserver>();
+const detachedTableLimit = 16;
+
+interface MountedTable {
+  readonly widget: TableWidget;
+  readonly element: HTMLElement;
+  readonly root: Root;
+  readonly observer: ResizeObserver;
+  readonly cache: TableCache | null;
+}
+
+const mountedTables = new WeakMap<HTMLElement, MountedTable>();
+const tableCache = ViewPlugin.define(() => new TableCache());
+
+function unmount(table: MountedTable) {
+  mountedTables.delete(table.element);
+  queueMicrotask(() => table.root.unmount());
+}
+
+class TableCache {
+  private readonly detached = new Map<number, MountedTable>();
+  private closed = false;
+
+  take(widget: TableWidget) {
+    const table = this.detached.get(widget.from);
+    if (!table) return null;
+    this.detached.delete(widget.from);
+    if (table.widget.eq(widget)) return table;
+    unmount(table);
+    return null;
+  }
+
+  keep(table: MountedTable) {
+    if (this.closed) {
+      unmount(table);
+      return;
+    }
+    const position = table.widget.from;
+    const previous = this.detached.get(position);
+    if (previous) unmount(previous);
+    this.detached.delete(position);
+    this.detached.set(position, table);
+    if (this.detached.size <= detachedTableLimit) return;
+    const oldest = this.detached.values().next().value;
+    if (oldest) {
+      this.detached.delete(oldest.widget.from);
+      unmount(oldest);
+    }
+  }
+
+  destroy() {
+    this.closed = true;
+    for (const table of this.detached.values()) unmount(table);
+    this.detached.clear();
+  }
+}
 
 function headerChildren(children: ReactNode): ReactNode {
   return Children.toArray(children).flatMap(child => {
@@ -66,7 +120,14 @@ class TableWidget extends WidgetType {
   }
 
   override toDOM(view: EditorView) {
-    const element = document.createElement('div');
+    const cache = view.plugin(tableCache);
+    const cached = cache?.take(this);
+    if (cached) {
+      cached.observer.observe(cached.element, { box: 'border-box' });
+      return cached.element;
+    }
+
+    const element = view.contentDOM.ownerDocument.createElement('div');
     element.className = 'lp-table';
     element.contentEditable = 'false';
     element.tabIndex = 0;
@@ -97,20 +158,25 @@ class TableWidget extends WidgetType {
       }
     });
     const root = createRoot(element);
-    roots.set(element, root);
-    root.render(<RenderTable source={this.source} lineOffsets={this.lineOffsets} />);
     const observer = new ResizeObserver(() => view.requestMeasure());
-    observer.observe(element);
-    observers.set(element, observer);
+    observer.observe(element, { box: 'border-box' });
+    const table = { widget: this, element, root, observer, cache };
+    mountedTables.set(element, table);
+    // Выходим из текущего вызова React, но заполняем блок до следующей отрисовки браузера.
+    queueMicrotask(() => {
+      if (!mountedTables.has(element)) return;
+      flushSync(() => root.render(<RenderTable source={this.source} lineOffsets={this.lineOffsets} />));
+    });
     return element;
   }
 
   override destroy(element: HTMLElement) {
-    observers.get(element)?.disconnect();
-    observers.delete(element);
-    const root = roots.get(element);
-    roots.delete(element);
-    queueMicrotask(() => root?.unmount());
+    const table = mountedTables.get(element);
+    if (!table) return;
+    table.observer.disconnect();
+    // CodeMirror удаляет блок за пределами окна, но при возврате таблица нужна сразу.
+    if (table.cache) table.cache.keep(table);
+    else unmount(table);
   }
 
   override ignoreEvent() { return true; }
@@ -163,6 +229,7 @@ const tableField = StateField.define<{ readonly focused: boolean; readonly decor
 });
 
 export const tableExtension = [
+  tableCache,
   tableField,
   EditorView.focusChangeEffect.of((_state, focused) => focusChanged.of(focused))
 ];

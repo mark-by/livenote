@@ -33,9 +33,11 @@ import ${module('heroui.css')};
 import ${module('styles.css')};
 const render = mermaid.render;
 window.renders = [];
-window.scrollToDiagram = () => {
+window.scrollToDiagram = (last = false) => {
   const view = EditorView.findFromDOM(document.querySelector('.cm-editor'));
-  view.scrollDOM.scrollTop = view.lineBlockAt(view.state.doc.toString().indexOf('\`\`\`mermaid')).top;
+  const source = view.state.doc.toString();
+  const start = last ? source.lastIndexOf('\`\`\`mermaid') : source.indexOf('\`\`\`mermaid');
+  view.scrollDOM.scrollTop = view.lineBlockAt(start).top;
 };
 mermaid.render = (id, source, host) => {
   window.renders.push(source);
@@ -135,6 +137,36 @@ test('Повторный вход в область диаграммы сраз�
   await expect(widget.getByRole('button', { name: 'Скачать SVG' })).toBeEnabled();
   await widget.getByRole('button', { name: 'Редактировать диаграмму' }).click();
   await expect(page.locator('output')).toHaveText('Правка');
+});
+
+test('Возврат к высокой схеме не сдвигает прокрутку сверх заданного шага', { timeout }, async t => {
+  // Arrange: измеряем обе схемы, затем прокручиваем до конца заметки.
+  const tall = diagram + '\nN16 --> N17[Конец второй схемы]';
+  const tail = lines('После схем').split('\n').slice(0, 54).join('\n');
+  const page = await open(t, `${lines('До схем')}\n\n${fence(diagram)}\n\n${fence(tall)}\n\n${tail}`);
+  await scrollToDiagram(page);
+  await expect(page.locator(previewSvg)).toContainText('Узел 15');
+  await page.evaluate(() => window.scrollToDiagram(true));
+  await expect(page.locator(previewSvg).getByText('Конец второй схемы')).toBeAttached();
+  await scrollToEnd(page);
+  await expect(page.locator('.lp-diagram')).toHaveCount(0);
+
+  // Act: быстро прокручиваем вверх и измеряем позицию после обновления редактора.
+  const result = await page.locator('.cm-scroller').evaluate(async element => {
+    const frame = () => new Promise(requestAnimationFrame);
+    let largestShift = 0;
+    for (let step = 0; step < 10; step++) {
+      const target = element.scrollTop - 380;
+      element.scrollTop = target;
+      await frame();
+      await frame();
+      largestShift = Math.max(largestShift, Math.abs(element.scrollTop - target));
+    }
+    return largestShift;
+  });
+
+  // Assert: возврат готового блока не меняет позицию текста относительно окна.
+  assert.ok(result <= 2, `Прокрутка отклонилась на ${result} пикселей`);
 });
 
 test('Повторный монтаж после сужения редактора не использует старую высоту', { timeout }, async t => {

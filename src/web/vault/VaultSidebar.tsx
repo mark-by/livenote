@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Chip, Disclosure, Dropdown, Input, Label, SearchField, Surface } from '@heroui/react';
-import { ArrowRightToSquare, File, FilePlus, Folder, FolderPlus, Pencil, Plus, TrashBin } from '@gravity-ui/icons';
+import { Button, Disclosure, Dropdown, Input, Label, SearchField } from '@heroui/react';
+import { ArrowRightToSquare, Copy, File, FilePlus, Folder, FolderPlus, Pencil, Plus, TrashBin } from '@gravity-ui/icons';
 import type { VaultSearchHit } from '../../shared/types';
 import type { VaultWorkspace } from './useVaultWorkspace';
 import type { VaultFileEntry } from './vaultPaths';
 import { fileName, fileStem, formatForPath, joinPath, parentPath } from './vaultPaths';
+import { copyVaultPath } from './VaultControls';
 
 interface FolderNode {
   readonly name: string;
@@ -26,9 +27,19 @@ function makeTree(files: readonly VaultFileEntry[], folders: readonly string[]):
     }
     return node;
   };
-  for (const folder of folders) ensure(folder);
+  const diagramAncestors = new Set<string>();
   for (const file of files) {
-    if (file.kind === 'markdown') ensure(parentPath(file.path)).files.push(file);
+    const parent = parentPath(file.path);
+    if (file.kind === 'markdown') {
+      ensure(parent).files.push(file);
+    } else {
+      for (let path = parent; path && !diagramAncestors.has(path); path = parentPath(path)) {
+        diagramAncestors.add(path);
+      }
+    }
+  }
+  for (const folder of folders) {
+    if (!diagramAncestors.has(folder)) ensure(folder);
   }
   return root;
 }
@@ -42,12 +53,11 @@ interface SidebarProps {
   readonly expandedFolders: ReadonlySet<string>;
   readonly setFoldersExpanded: (paths: readonly string[], expanded: boolean) => void;
   readonly onNavigate?: () => void;
-  readonly onDiagnostics: () => void;
   readonly onFileAction: (action: string, path: string) => void;
   readonly onFolderAction: (action: string, path: string) => void;
 }
 
-export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, onNavigate, onDiagnostics, onFileAction, onFolderAction }: SidebarProps): React.JSX.Element {
+export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, onNavigate, onFileAction, onFolderAction }: SidebarProps): React.JSX.Element {
   const { snapshot, activeId, hits, selectedFolder } = workspace;
   const vaultName = snapshot.vaultName ?? 'Проект';
   const [query, setQuery] = useState('');
@@ -116,6 +126,8 @@ export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, o
       void create(actionId === 'create-file' ? 'file' : 'folder', folder);
     } else if (actionId === 'rename') {
       setEditing({ ...item, name: item.kind === 'file' ? fileStem(item.path) : fileName(item.path), error: null });
+    } else if (actionId === 'copy-path' && item.kind === 'file') {
+      void copyVaultPath(item.path, workspace.showError);
     } else if (item.kind === 'file') onFileAction(actionId, item.path);
     else onFolderAction(actionId, item.path);
   };
@@ -126,10 +138,14 @@ export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, o
     'data-drop-target': dropTarget === folder && canDrop(folder) ? 'true' : undefined,
     'data-drop-invalid': dropTarget === folder && !canDrop(folder) ? 'true' : undefined,
     onDragOver: (event: React.DragEvent) => { if (!dragged) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = canDrop(folder) ? 'move' : 'none'; setDropTarget(folder); },
-    onDragLeave: (event: React.DragEvent) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null); },
+    onDragLeave: (event: React.DragEvent) => {
+      if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+      setDropTarget(current => current === folder ? null : current);
+    },
     onDrop: (event: React.DragEvent) => {
+      if (!dragged) return;
       event.preventDefault(); event.stopPropagation(); setDropTarget(null);
-      if (!dragged || !canDrop(folder)) return;
+      if (!canDrop(folder)) return;
       const target = joinPath(folder, fileName(dragged.path));
       const operation = dragged.kind === 'file' ? workspace.move(dragged.path, target) : workspace.moveFolder(dragged.path, target);
       void operation.then((error) => {
@@ -166,7 +182,7 @@ export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, o
       <Label className="sr-only">Поиск по заметкам</Label><SearchField.Group><SearchField.SearchIcon /><SearchField.Input placeholder="Поиск" /><SearchField.ClearButton aria-label="Очистить поиск" /></SearchField.Group>
     </SearchField>
     <div className="vault-sidebar__scroll">
-      {hits !== null ? <SearchResults hits={hits.filter((hit) => formatForPath(hit.path) === 'markdown')} onOpen={open} /> : snapshot.files.length === 0 && snapshot.folders.length <= 1
+      {hits !== null ? <SearchResults hits={hits.filter((hit) => formatForPath(hit.path) === 'markdown')} onOpen={open} /> : tree.files.length === 0 && tree.folders.size === 0
         ? <p className="vault-empty">Создайте первую заметку в хранилище.</p>
         : <nav aria-label="Файлы хранилища"><FolderView folder={tree} {...treeProps} root /></nav>}
     </div>
@@ -181,10 +197,10 @@ export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, o
         </Dropdown.SubmenuTrigger>
         <Dropdown.Item id="rename" textValue="Переименовать"><Pencil aria-hidden="true" /><Label>Переименовать</Label></Dropdown.Item>
         <Dropdown.Item id="move" textValue="Переместить"><ArrowRightToSquare aria-hidden="true" /><Label>Переместить</Label></Dropdown.Item>
+        {menu?.kind === 'file' && <Dropdown.Item id="copy-path" textValue="Скопировать путь"><Copy aria-hidden="true" /><Label>Скопировать путь</Label></Dropdown.Item>}
         <Dropdown.Item id="delete" textValue="Удалить" variant="danger"><TrashBin aria-hidden="true" /><Label>Удалить</Label></Dropdown.Item>
       </Dropdown.Menu></Dropdown.Popover>
     </Dropdown>
-    {snapshot.problems.length > 0 && <Surface className="vault-problem-summary" variant="secondary"><Chip color="warning" size="sm" variant="soft">{snapshot.problems.length}</Chip><span>Файлы требуют внимания</span><Button size="sm" variant="tertiary" onPress={onDiagnostics}>Подробнее</Button></Surface>}
   </div>;
 }
 
@@ -239,10 +255,10 @@ function FolderView({ folder, root = false, ...props }: TreeProps & { readonly f
   </ul>;
   if (root) return content;
   const item: TreeItem = { kind: 'folder', path: folder.path };
-  return <li className="vault-tree__folder"><Disclosure isExpanded={expanded} onExpandedChange={value => props.setFoldersExpanded([folder.path], value)}>
+  return <li className="vault-tree__folder" {...props.dropProps(folder.path)}><Disclosure isExpanded={expanded} onExpandedChange={value => props.setFoldersExpanded([folder.path], value)}>
     <div className="vault-tree__folder-row" data-selected={props.selectedFolder === folder.path ? 'true' : undefined}
       draggable={props.editing?.path !== folder.path} onDragStart={(event) => props.drag(event, item)} onDragEnd={props.endDrag}
-      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); props.context(item, event.clientX, event.clientY); }} {...props.dropProps(folder.path)}>
+      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); props.context(item, event.clientX, event.clientY); }}>
       <Disclosure.Heading>{props.editing?.path === folder.path ? name(item, folder.name) : <Disclosure.Trigger className="vault-tree__folder-trigger" onPress={() => props.action('select', item)}>
         <Disclosure.Indicator /><Folder aria-hidden="true" /><span>{folder.name}</span>
       </Disclosure.Trigger>}</Disclosure.Heading>

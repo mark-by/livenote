@@ -1,7 +1,7 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, readFile } from 'node:fs/promises';
-import { chromium, expect } from 'playwright/test';
+import { chromium, expect, webkit } from 'playwright/test';
 
 const base = process.env.LIVENOTE_TEST_URL;
 if (!base) throw new Error('Задайте LIVENOTE_TEST_URL отдельного vault-сервера.');
@@ -10,7 +10,10 @@ let browser;
 let sequence = 0;
 
 before(async () => {
-  browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const webkitExecutable = process.env.LIVENOTE_TEST_WEBKIT_EXECUTABLE;
+  browser = webkitExecutable
+    ? await webkit.launch({ executablePath: webkitExecutable, headless: true })
+    : await chromium.launch({ channel: 'chrome', headless: true });
   if (screenshots) await mkdir(screenshots, { recursive: true });
 });
 after(async () => { await browser?.close(); });
@@ -27,10 +30,14 @@ const tokens = (document) => ({ expectedRevision: document.page.revision, expect
 const getDocument = async (id) => (await api(`/pages/${encodeURIComponent(id)}/document`)).document;
 const documentRoute = /\/api\/(?:vaults\/[^/]+\/)?pages\/[^/]+\/document$/;
 
-async function fixture(t, source = '# Заголовок\n\nТекст заметки с **акцентом** и #тег.\n\n- первый пункт\n- второй пункт\n\n> Цитата.\n', { mermaidTheme } = {}) {
+async function fixture(t, source = '# Заголовок\n\nТекст заметки с **акцентом** и #тег.\n\n- первый пункт\n- второй пункт\n\n> Цитата.\n', { mermaidTheme, additionalFile } = {}) {
   const suffix = `shell-${Date.now()}-${sequence++}`;
   const id = `Fixtures/${suffix}/${suffix}.md`;
   await api('/pages', 'POST', { title: suffix, path: id, source });
+  if (additionalFile) {
+    const file = { title: additionalFile, path: `Fixtures/${suffix}/${additionalFile}.md`, source: '# Заметка' };
+    await api('/pages', 'POST', file);
+  }
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   if (mermaidTheme) {
     await context.addInitScript((theme) => localStorage.setItem('livenote_mermaid_theme', theme), mermaidTheme);
@@ -54,7 +61,7 @@ async function fixture(t, source = '# Заголовок\n\nТекст заме�
   const navigation = page.getByRole('navigation', { name: 'Файлы хранилища' });
   await navigation.getByRole('button', { name: 'Fixtures', exact: true }).click();
   await navigation.getByRole('button', { name: suffix, exact: true }).click();
-  await page.locator('.vault-tree__page').filter({ hasText: suffix }).click();
+  await navigation.locator('.vault-tree__page').getByText(suffix, { exact: true }).click();
   await expect(page.locator(`.vault-document[data-page-id="${id}"] .cm-content`)).toBeVisible();
   return { page, id, suffix };
 }
@@ -258,6 +265,159 @@ for (const { action, remaining } of [
   });
 }
 
+const visibleDocuments = (page) => page.locator('article.vault-document:visible');
+const documentArticle = (page, id) => page.locator(`article.vault-document[data-page-id="${id}"]`);
+
+async function splitFixture(t) {
+  const title = 'Вторая заметка';
+  const { page, id, suffix } = await fixture(t, 'Текст первой заметки.\n', { additionalFile: title });
+  const secondId = `Fixtures/${suffix}/${title}.md`;
+  const tree = page.getByRole('navigation', { name: 'Файлы хранилища' });
+  const openSecond = () => tree.getByRole('button', { name: title, exact: true }).click();
+  await documentTab(page, suffix).click();
+  return { page, id, suffix, title, secondId, openSecond };
+}
+
+async function splitTab(page, title, action) {
+  await documentTab(page, title).click({ button: 'right' });
+  await page.getByRole('menuitem', { name: action, exact: true }).click();
+}
+
+test('Разделение вправо оставляет документ слева и открывает файл из дерева справа', { timeout: tabsTimeout }, async t => {
+  // Arrange: открыт только первый документ. Второй файл доступен в дереве.
+  const { page, id, suffix, title, secondId, openSecond } = await splitFixture(t);
+  const first = documentArticle(page, id);
+  const full = await first.boundingBox();
+  assert.ok(full, 'Первый документ виден до разделения');
+
+  // Act: разделяем текущую вкладку и открываем второй файл без выбора панели.
+  await splitTab(page, suffix, 'Split Right');
+  await expect(visibleDocuments(page)).toHaveCount(1);
+  await expect.poll(async () => (await first.boundingBox())?.width).toBeLessThan(full.width);
+  await openSecond();
+
+  // Assert: оба документа видны. Второй документ расположен справа от первого.
+  const second = documentArticle(page, secondId);
+  await expect(visibleDocuments(page)).toHaveCount(2);
+  const [left, right] = await Promise.all([first.boundingBox(), second.boundingBox()]);
+  assert.ok(left && right, 'Оба документа видны после открытия файла');
+  expect(left.x).toBeCloseTo(full.x, 0);
+  expect(right.y).toBeCloseTo(left.y, 0);
+  expect(right.x).toBeGreaterThanOrEqual(left.x + left.width - 1);
+  await expect(page.locator('.vault-tabs-row')).toHaveCount(1);
+  await expect(tabTitles(page)).toHaveText([suffix, title]);
+});
+
+test('Разделение вниз показывает скрытую вкладку под текущим документом', { timeout: tabsTimeout }, async t => {
+  // Arrange: закрепляем первую вкладку и открываем вторую заметку вместо первой.
+  const { page, id, suffix, secondId, openSecond } = await splitFixture(t);
+  await openSecond();
+  const first = documentArticle(page, id);
+  const second = documentArticle(page, secondId);
+  await expect(second).toBeVisible();
+  await expect(first).toBeHidden();
+  await expect(documentTab(page, suffix)).toBeVisible();
+
+  // Act: разделяем вниз через меню скрытой вкладки.
+  await splitTab(page, suffix, 'Split Down');
+
+  // Assert: текущий документ остаётся сверху, первый открывается под ним.
+  await expect(visibleDocuments(page)).toHaveCount(2);
+  const [top, bottom] = await Promise.all([second.boundingBox(), first.boundingBox()]);
+  assert.ok(top && bottom, 'Оба документа видны после разделения');
+  expect(bottom.x).toBeCloseTo(top.x, 0);
+  expect(bottom.y).toBeGreaterThanOrEqual(top.y + top.height - 1);
+});
+
+test('Редактор автоматически сохраняет изменения из обеих панелей', { timeout: tabsTimeout }, async t => {
+  // Arrange: открываем второй файл и разделяем его вкладку. Скрытая вкладка заполняет правую панель.
+  const { page, id, title, secondId, openSecond } = await splitFixture(t);
+  await openSecond();
+  await expect(documentArticle(page, secondId)).toBeVisible();
+  await splitTab(page, title, 'Split Right');
+  await expect(visibleDocuments(page)).toHaveCount(2);
+  const firstText = 'Правка первой заметки.';
+  const secondText = 'Правка второй заметки.';
+
+  // Act: меняем текст по очереди в обоих редакторах без команды сохранения.
+  for (const [path, text] of [[id, firstText], [secondId, secondText]]) {
+    await documentArticle(page, path).locator('.cm-line').first().click();
+    await page.keyboard.press('ControlOrMeta+a');
+    await page.keyboard.type(text);
+  }
+
+  // Assert: сервер вернул свой новый текст для каждого файла.
+  await expect.poll(async () => {
+    const documents = await Promise.all([getDocument(id), getDocument(secondId)]);
+    return documents.map(({ source }) => source.trim());
+  }).toEqual([firstText, secondText]);
+});
+
+test('Изменение размеров вложенных панелей сохраняет DOM редакторов', { timeout: tabsTimeout }, async t => {
+  // Arrange: обе заметки открыты, правая панель разделена по высоте.
+  const { page, id, suffix, title, secondId, openSecond } = await splitFixture(t);
+  await splitTab(page, suffix, 'Split Right');
+  await openSecond();
+  await splitTab(page, title, 'Split Down');
+  const area = page.locator('.vault-editor-area');
+  const vertical = area.getByRole('separator', { name: 'Ширина панелей редактора' });
+  const horizontal = area.getByRole('separator', { name: 'Высота панелей редактора' });
+  const editors = area.locator('.cm-editor:visible');
+  await expect(editors).toHaveCount(2);
+  const originalEditors = await editors.elementHandles();
+  const areaBox = await area.boundingBox();
+  const verticalBox = await vertical.boundingBox();
+  const horizontalBox = await horizontal.boundingBox();
+  assert.ok(areaBox && verticalBox && horizontalBox);
+
+  // Act: увеличиваем левую панель и уменьшаем верхнюю правую. Затем нажимаем стрелку.
+  const x = verticalBox.x + verticalBox.width / 2;
+  const y = horizontalBox.y + horizontalBox.height / 2;
+  const dx = Math.round(areaBox.width / 5);
+  const dy = Math.round(areaBox.height / 5);
+  await page.mouse.move(x, areaBox.y + areaBox.height / 4);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, areaBox.y + areaBox.height / 4);
+  await page.mouse.up();
+  const nested = await horizontal.boundingBox();
+  assert.ok(nested);
+  await page.mouse.move(nested.x + nested.width / 2, y);
+  await page.mouse.down();
+  await page.mouse.move(nested.x + nested.width / 2, y - dy);
+  await page.mouse.up();
+  await horizontal.press('ArrowDown');
+
+  // Assert: разделитель не выходит за правую ветвь, обе заметки остаются в тех же DOM-узлах.
+  const frames = area.locator('.vault-editor-frame');
+  const left = await frames.filter({ has: documentArticle(page, id) }).boundingBox();
+  const right = await frames.filter({ has: documentArticle(page, secondId) }).boundingBox();
+  const divider = await horizontal.boundingBox();
+  assert.ok(left && right && divider);
+  expect(Math.abs(left.width - areaBox.width * 0.7)).toBeLessThan(2);
+  expect(Math.abs(right.height - areaBox.height * 0.35)).toBeLessThan(2);
+  expect(Math.abs(divider.x - right.x)).toBeLessThan(2);
+  expect(Math.abs(divider.width - right.width)).toBeLessThan(2);
+  expect(await editors.evaluateAll((current, original) =>
+    current.every((editor, index) => editor === original[index]), originalEditors)).toBe(true);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe('');
+});
+
+test('Закрытие вкладки в разделённом редакторе оставляет другой документ видимым', { timeout: tabsTimeout }, async t => {
+  // Arrange: открываем второй файл в новой правой панели.
+  const { page, id, suffix, title, secondId, openSecond } = await splitFixture(t);
+  await splitTab(page, suffix, 'Split Right');
+  await openSecond();
+  await expect(visibleDocuments(page)).toHaveCount(2);
+
+  // Act: закрываем вкладку второго документа.
+  await documentTab(page, title).getByRole('button', { name: `Закрыть ${title}`, exact: true }).click();
+
+  // Assert: закрытая вкладка исчезла, первая заметка осталась открыта.
+  await expect(tabTitles(page)).toHaveText([suffix]);
+  await expect(documentArticle(page, secondId)).toBeHidden();
+  await expect(documentArticle(page, id).locator('.cm-content')).toBeVisible();
+});
+
 test('Контекстное меню вкладки копирует путь файла относительно хранилища', { timeout: tabsTimeout }, async t => {
   // Arrange: открыть документ и разрешить чтение буфера обмена в тестовом профиле.
   const { page, id, suffix } = await fixture(t);
@@ -269,6 +429,27 @@ test('Контекстное меню вкладки копирует путь �
 
   // Assert: буфер содержит путь вместе с папкой и расширением.
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(id);
+});
+
+test('Меню файла в дереве копирует путь без открытой вкладки', { timeout: tabsTimeout }, async t => {
+  // Arrange: создаём второй файл до запуска интерфейса и заполняем буфер.
+  const title = 'Заметка без вкладки';
+  const { page, suffix } = await fixture(t, undefined, { additionalFile: title });
+  const path = `Fixtures/${suffix}/${title}.md`;
+  await allowImageClipboard(page);
+  await expect(page.locator('[data-vault-tab]').filter({ hasText: title })).toHaveCount(0);
+
+  // Act: копируем путь через контекстное меню строки файла.
+  const file = page.locator('.vault-sidebar').getByRole('button', { name: title, exact: true });
+  await file.click({ button: 'right' });
+  const menu = page.getByRole('menu', { name: 'Контекстное меню файла' });
+  const copy = menu.getByRole('menuitem', { name: 'Скопировать путь', exact: true });
+  await expect(copy).toBeVisible();
+  await shot(page, 'tree-copy-path-menu');
+  await copy.click();
+
+  // Assert: в буфере путь от корня хранилища, включая расширение.
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(path);
 });
 
 async function insert(page, format) {
@@ -526,14 +707,19 @@ test('Diagram context actions do not follow the pointer onto document text', { t
   assert.equal((await getDocument(id)).source, source);
 });
 
-test('Diagram files are hidden from the tree and search while documents stay visible', { timeout: 120_000 }, async (t) => {
+test('Diagram-only folders and diagram files are hidden while documents stay visible', { timeout: 120_000 }, async (t) => {
   // Arrange: отдельный файл схемы остаётся доступным для вставки.
   const { page, suffix } = await fixture(t);
   const assetPath = `Fixtures/${suffix}/Схемы/${suffix}-internal.mmd`;
   await api('/pages', 'POST', { title: `${suffix}-internal`, path: assetPath, source: 'flowchart LR\n A-->B' });
+  // Act: загружаем дерево после добавления схемы.
   await page.reload();
-  // Assert: дерево показывает документы без внутренних файлов схем.
-  await expect(page.locator('.vault-tree__page').filter({ hasText: suffix })).toHaveCount(1);
+  // Assert: дерево показывает заметку и скрывает папку со схемой.
+  const navigation = page.getByRole('navigation', { name: 'Файлы хранилища' });
+  const notes = navigation.locator('.vault-tree__page').filter({ hasText: suffix });
+  await expect(notes).toHaveCount(1);
+  await expect(notes).toBeVisible();
+  await expect(navigation.getByRole('button', { name: 'Схемы', exact: true })).toHaveCount(0);
   // Act: ищем по общему имени заметки и схемы.
   await page.getByRole('searchbox').fill(suffix);
   // Assert: результат поиска не открывает внутреннюю схему как документ.
@@ -563,6 +749,58 @@ test('Removing the last diagram embed deletes its file from the vault', { timeou
   await api(`/pages/${encodeURIComponent(assetPath)}/document`, 'GET', undefined, 404);
   await expect(preview).toHaveCount(0);
   await shot(page, 'diagram-deleted');
+});
+
+test('Разделитель меняет ширину панели без выделения текста', { timeout: tabsTimeout }, async (t) => {
+  // Arrange: открываем длинную заметку и ставим курсор в текст.
+  const source = Array.from({ length: 40 }, (_, index) => `Строка ${index + 1} со словами для выделения мышью.`).join('\n\n');
+  const { page, id } = await fixture(t, source);
+  const editor = page.locator(`.vault-document[data-page-id="${id}"] .cm-content`);
+  await editor.click({ position: { x: 25, y: 25 } });
+  const divider = page.getByRole('separator', { name: 'Ширина дерева заметок' });
+  const box = await divider.boundingBox();
+  assert.ok(box);
+  const startX = box.x + box.width - 1;
+  const startY = box.y + 260;
+  const distance = 110;
+
+  // Act: ведём разделитель по диагонали через область текста.
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  await page.mouse.move(startX + distance, startY + 470, { steps: 18 });
+  await page.mouse.up();
+
+  // Assert: панель стала шире, выделения в документе нет.
+  await expect(divider).toHaveAttribute('aria-valuenow', String(box.x + distance));
+  assert.equal(await page.evaluate(() => getSelection()?.toString()), '');
+});
+
+test('Ширина дерева после перетаскивания сохраняется при повторном открытии', { timeout: tabsTimeout }, async (t) => {
+  // Arrange: открываем заметку и определяем исходную ширину панели.
+  const { page } = await fixture(t);
+  const sidebar = page.locator('.vault-sidebar');
+  const divider = page.getByRole('separator', { name: 'Ширина дерева заметок' });
+  const start = await divider.boundingBox();
+  assert.ok(start);
+  const initialWidth = await sidebar.evaluate(element => element.clientWidth);
+  const distance = 96;
+  const x = start.x + start.width / 2;
+  const y = start.y + start.height / 2;
+
+  // Act: перетаскиваем разделитель вправо и открываем окно заново.
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + distance, y, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(() => sidebar.evaluate(element => element.clientWidth)).toBe(initialWidth + distance);
+  const context = page.context();
+  await page.close();
+  const reopened = await context.newPage();
+  await reopened.goto(base);
+
+  // Assert: ширина в новом окне совпадает с выбранной.
+  await expect.poll(() => reopened.locator('.vault-sidebar').evaluate(element => element.clientWidth))
+    .toBe(initialWidth + distance);
 });
 
 test('Empty folder create, selected-folder note, folder move and recursive delete use native APIs', { timeout: 120_000 }, async (t) => {
@@ -682,6 +920,35 @@ test('Tree context creation, collision drafts and drag moves preserve files', { 
   await shot(page, 'tree-context-drag');
 });
 
+test('Сброс на файл в раскрытой вложенной папке переносит заметку в эту папку', { timeout: tabsTimeout }, async (t) => {
+  // Arrange: раскрываем вложенную папку с заметкой, на которую можно сбросить файл.
+  const { page, id, suffix } = await fixture(t);
+  const destination = `Fixtures/${suffix}/Destination`;
+  const existingTitle = 'Existing';
+  const existing = { title: existingTitle, path: `${destination}/${existingTitle}.md`, source: '# Заметка в папке' };
+  await api('/pages', 'POST', existing);
+  await page.reload();
+  const navigation = page.getByRole('navigation', { name: 'Файлы хранилища' });
+  await navigation.getByRole('button', { name: 'Destination', exact: true }).click();
+  const target = navigation.getByRole('button', { name: existingTitle, exact: true });
+  const dragged = navigation.locator('.vault-tree__file').filter({
+    has: page.getByRole('button', { name: suffix, exact: true })
+  });
+  await expect(target).toBeVisible();
+  await dragged.click({ trial: true });
+  await target.click({ trial: true });
+
+  // Act: сбрасываем заметку на строку файла, а не на заголовок папки.
+  await dragged.dragTo(target);
+
+  // Assert: сервер переместил заметку во вложенную папку, а не в родительскую.
+  const movedPath = `${destination}/${suffix}.md`;
+  await expect.poll(async () => {
+    const { files } = await api('/vault');
+    return files.map(entry => entry.path).filter(path => path === id || path === movedPath);
+  }, { timeout: 3000 }).toEqual([movedPath]);
+});
+
 test('Dragging a file while its draft is saving keeps the draft and file in place', { timeout: 120_000 }, async (t) => {
   const { page, id, suffix } = await fixture(t);
   const snapshot = await api('/vault');
@@ -732,7 +999,7 @@ test('Mobile tree, persistent Vim and dark theme remain usable without horizonta
   await shot(page, 'settings-switches-mobile');
   await page.setViewportSize({ width: 1440, height: 900 });
   await settings.getByRole('button', { name: 'Готово' }).click();
-  const mode = page.locator('.vault-document:not([hidden]) .lp-mode');
+  const mode = page.getByRole('group', { name: 'Состояние активного редактора' }).getByRole('status');
   await expect(mode).toContainText('Vim');
   await page.reload();
   await expect(mode).toContainText('Vim');
@@ -752,6 +1019,84 @@ test('Mobile tree, persistent Vim and dark theme remain usable without horizonta
   await expect(page.getByRole('dialog', { name: 'Дерево заметок' })).toBeVisible();
   await shot(page, 'mobile-tree-dark');
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('Компактный статус показывает связанные заметки активной области', { timeout: tabsTimeout }, async t => {
+  // Arrange: первая заметка ссылается на вторую, которую открываем в отдельной области.
+  const title = 'Заметка справа';
+  const source = `[Ссылка](${encodeURIComponent(`${title}.md`)})`;
+  const { page, id, suffix } = await fixture(t, source, { additionalFile: title });
+  const secondId = `Fixtures/${suffix}/${title}.md`;
+  await splitTab(page, suffix, 'Split Right');
+  await page.locator('.vault-sidebar').getByRole('button', { name: title, exact: true }).click();
+  const right = documentArticle(page, secondId);
+  await expect(right).toBeVisible();
+  const status = page.getByRole('group', { name: 'Состояние активного редактора' });
+  const scroller = right.locator('.cm-scroller');
+  const [editorBox, workspaceBox, statusBox] = await Promise.all([
+    scroller.boundingBox(), page.getByRole('main').boundingBox(), status.boundingBox()
+  ]);
+  assert.ok(editorBox && workspaceBox && statusBox);
+  expect(editorBox.y + editorBox.height).toBeCloseTo(workspaceBox.y + workspaceBox.height, 0);
+  expect(statusBox.y).toBeGreaterThan(editorBox.y);
+  await expect(status.getByRole('button', { name: 'Связанные заметки: 1' })).toBeVisible();
+
+  // Act: открываем связанную заметку через кнопку справа внизу.
+  await status.getByRole('button', { name: 'Связанные заметки: 1' }).click();
+  const links = page.getByRole('dialog', { name: 'Связанные заметки' });
+  await links.getByRole('button', { name: new RegExp(suffix) }).click();
+
+  // Assert: фокус и счётчик переключились на первую заметку, обе области видны.
+  await expect(documentArticle(page, id)).toBeVisible();
+  await expect(right).toBeVisible();
+  await expect(documentTab(page, suffix)).toHaveAttribute('aria-selected', 'true');
+  await expect(status.getByRole('button', { name: 'Связанные заметки: 0' })).toBeVisible();
+});
+
+test('Верхний отступ прокручивается вместе со страницей, а путь остаётся сверху', { timeout: tabsTimeout }, async t => {
+  // Arrange: открываем заметку с содержимым длиннее области прокрутки.
+  const source = Array.from({ length: 90 }, (_, index) => `Строка страницы ${index + 1}`).join('\n');
+  const { page, id } = await fixture(t, source);
+  const article = documentArticle(page, id);
+  const breadcrumbs = article.getByRole('navigation', { name: 'Путь к заметке' });
+  const scroller = article.locator('.cm-scroller');
+  const first = article.locator('.cm-line').filter({ hasText: /^Строка страницы 1$/ });
+  const [pathTop, viewport, initial] = await Promise.all([
+    breadcrumbs.boundingBox(), scroller.boundingBox(), first.boundingBox()
+  ]);
+  assert.ok(pathTop && viewport && initial);
+  const gap = initial.y - viewport.y;
+  expect(gap).toBeGreaterThan(0);
+  expect(viewport.y).toBeCloseTo(pathTop.y + pathTop.height, 0);
+
+  // Act: прокручиваем заметку ровно на высоту начального отступа.
+  await scroller.evaluate((element, offset) => { element.scrollTop = offset; }, gap);
+
+  // Assert: первая строка дошла до края области прокрутки, шапка не сместилась.
+  await expect.poll(async () => (await first.boundingBox())?.y).toBeCloseTo(viewport.y, 0);
+  expect((await breadcrumbs.boundingBox())?.y).toBe(pathTop.y);
+});
+
+test('Сегмент пути раскрывает папку в дереве и оставляет заметку открытой', { timeout: tabsTimeout }, async t => {
+  // Arrange: открываем документ во вложенной папке и сворачиваем её родителя.
+  const { page, id, suffix } = await fixture(t);
+  const tree = page.getByRole('navigation', { name: 'Файлы хранилища' });
+  await tree.getByRole('button', { name: 'Fixtures', exact: true }).click();
+  await expect(tree.getByRole('heading', { name: suffix, exact: true })).toBeHidden();
+  const article = documentArticle(page, id);
+  const breadcrumbs = article.getByRole('navigation', { name: 'Путь к заметке' });
+
+  // Act: выбираем вложенную папку по её сегменту пути.
+  const folderLink = breadcrumbs.getByRole('link', { name: suffix, exact: true })
+    .and(page.locator(':not([aria-current])'));
+  await folderLink.click();
+
+  // Assert: нужная папка снова видна и выбрана, файл остался в редакторе.
+  const folder = tree.locator('.vault-tree__folder-row').filter({
+    has: page.getByRole('heading', { name: suffix, exact: true })
+  });
+  await expect(folder).toHaveAttribute('data-selected', 'true');
+  await expect(article).toBeVisible();
 });
 
 test('Following external edits scrolls to the changed text without moving the cursor', { timeout: 120_000 }, async (t) => {

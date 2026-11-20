@@ -1,0 +1,39 @@
+.vault-editor-area {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.vault-pane-divider {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  outline: none;
+}
+
+.vault-pane-divider[aria-orientation='vertical'] {
+  width: var(--space-3);
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+.vault-pane-divider[aria-orientation='horizontal'] {
+  height: var(--space-3);
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+.vault-pane-divider:is(:hover, :focus-visible, :active)::after {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  content: '';
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.vault-pane-divider[aria-orientation='vertical']::after { width: 2px; }
+.vault-pane-divider[aria-orientation='horizontal']::after { height: 2px; }

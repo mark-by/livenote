@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Alert, Button, Drawer, Surface } from '@heroui/react';
+import { Alert, Button, Drawer } from '@heroui/react';
 import { ArrowDownToSquare, ArrowUpFromSquare, Bars, FolderOpen, Gear, LayoutSideContentLeft, Moon, Sun } from '@gravity-ui/icons';
 import type { WebApiConfig } from '../api';
 import { exportAll, exportPage, importMarkdown, openVaultFolder, vaultLocationUrl } from '../api';
@@ -7,15 +7,15 @@ import { useConfirm } from '../components/ConfirmDialog';
 import { SettingsDialog } from '../components/SettingsDialog';
 import type { PageWidth } from '../components/SettingsDialog';
 import { TokenDialog } from '../components/TokenDialog';
-import type { EditorVimMode } from '../editor/LivePreviewEditor';
 import { VaultMenu } from './VaultControls';
 import { DiagnosticsDialog, VaultPathDialog } from './VaultDialogs';
 import { VaultDocumentTabs } from './VaultDocumentTabs';
-import { VaultDocumentLoading, VaultDocumentView } from './VaultDocumentView';
+import { VaultEditors } from './VaultEditors';
 import { VaultSidebar } from './VaultSidebar';
+import { VaultWorkspaceLayout } from './VaultWorkspaceLayout';
 import { useVaultFolderExpansion } from './useVaultFolderExpansion';
 import { useVaultWorkspace } from './useVaultWorkspace';
-import { fileStem } from './vaultPaths';
+import { fileStem, parentPath } from './vaultPaths';
 
 interface PathOperation {
   readonly kind: 'move' | 'move-folder';
@@ -43,10 +43,17 @@ export function VaultApp({ config, vaultId, vaultIdExplicit }: VaultAppProps): R
   const folderExpansion = useVaultFolderExpansion(vaultId);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => localStorage.getItem('livenote_color_theme') === 'dark' ? 'dark' : 'light');
   const [vimEnabled, setVimEnabled] = useState(() => localStorage.getItem('livenote_vim') === '1');
-  const [, setVimMode] = useState<EditorVimMode>('normal');
   const fileRef = useRef<HTMLInputElement>(null);
   const { confirm, dialog } = useConfirm();
   const activeDocument = workspace.activeId ? workspace.documents[workspace.activeId] : undefined;
+
+  const revealFolder = (path: string): void => {
+    const ancestors: string[] = [];
+    for (let folder = path; folder; folder = parentPath(folder)) ancestors.push(folder);
+    folderExpansion.setFoldersExpanded(ancestors, true);
+    workspace.setSelectedFolder(path);
+    if (window.matchMedia('(max-width: 50rem)').matches) setTreeOpen(true);
+  };
 
   const changeTheme = (): void => {
     const next = theme === 'dark' ? 'light' : 'dark'; setTheme(next);
@@ -123,30 +130,24 @@ export function VaultApp({ config, vaultId, vaultIdExplicit }: VaultAppProps): R
         if (action === 'export-all') void exportAll();
         if (action === 'theme') changeTheme();
         if (action === 'settings') setSettingsOpen(true);
+        if (action === 'diagnostics') setDiagnosticsOpen(true);
       }} actions={[
         ...(config.folderPickerAvailable === true ? [{ id: 'open-folder', label: 'Открыть папку', icon: FolderOpen }] : []),
         { id: 'import', label: 'Импорт Markdown', icon: ArrowDownToSquare },
         { id: 'export', label: 'Экспорт документа', icon: ArrowUpFromSquare },
         { id: 'export-all', label: 'Экспорт хранилища', icon: ArrowUpFromSquare },
         { id: 'theme', label: theme === 'dark' ? 'Светлая тема' : 'Тёмная тема', icon: theme === 'dark' ? Sun : Moon },
+        ...(workspace.snapshot.problems.length > 0 ? [{ id: 'diagnostics', label: 'Диагностика хранилища' }] : []),
         { id: 'settings', label: 'Настройки', icon: Gear }
       ]} />} />
     <input ref={fileRef} className="vault-visually-hidden" type="file" aria-hidden="true" tabIndex={-1} accept=".md,.markdown,text/markdown" onChange={(event) => {
       const file = event.target.files?.[0]; if (file) void importFile(file); event.target.value = '';
     }} />
-    <div className="vault-workspace">
-      <Surface className="vault-sidebar" variant="default"><VaultSidebar workspace={workspace} {...folderExpansion} onDiagnostics={() => setDiagnosticsOpen(true)} onFileAction={(action, path) => void fileAction(action, path)} onFolderAction={(action, path) => void folderAction(action, path)} /></Surface>
-      <main className="vault-main">
-        {workspace.openTabs.map((path) => {
-          const document = workspace.documents[path];
-          return document ? <VaultDocumentView key={path} workspace={workspace} document={document} active={workspace.activeId === path} theme={theme} vimEnabled={vimEnabled} onVimModeChange={setVimMode} /> : null;
-        })}
-        {workspace.unavailable ? <div className="vault-welcome"><h1>Хранилище недоступно</h1><p>{workspace.unavailable}</p></div>
-          : !activeDocument && (workspace.ready ? <div className="vault-welcome"><h1>Начните с заметки</h1><p>Выберите файл слева или создайте Markdown-документ в текущей папке.</p></div> : <VaultDocumentLoading />)}
-      </main>
-    </div>
+    <VaultWorkspaceLayout sidebar={<VaultSidebar workspace={workspace} {...folderExpansion} onFileAction={(action, path) => void fileAction(action, path)} onFolderAction={(action, path) => void folderAction(action, path)} />}>
+      <VaultEditors workspace={workspace} theme={theme} vimEnabled={vimEnabled} onRevealFolder={revealFolder} />
+    </VaultWorkspaceLayout>
     <Drawer.Backdrop isOpen={treeOpen} onOpenChange={setTreeOpen}><Drawer.Content placement="left" className="vault-mobile-drawer"><Drawer.Dialog aria-label="Дерево заметок">
-      <Drawer.Header><Drawer.Heading>Файлы</Drawer.Heading><Drawer.CloseTrigger aria-label="Закрыть дерево" /></Drawer.Header><Drawer.Body><VaultSidebar workspace={workspace} {...folderExpansion} onNavigate={() => setTreeOpen(false)} onDiagnostics={() => { setTreeOpen(false); setDiagnosticsOpen(true); }} onFileAction={(action, path) => void fileAction(action, path)} onFolderAction={(action, path) => void folderAction(action, path)} /></Drawer.Body>
+      <Drawer.Header><Drawer.Heading>Файлы</Drawer.Heading><Drawer.CloseTrigger aria-label="Закрыть дерево" /></Drawer.Header><Drawer.Body><VaultSidebar workspace={workspace} {...folderExpansion} onNavigate={() => setTreeOpen(false)} onFileAction={(action, path) => void fileAction(action, path)} onFolderAction={(action, path) => void folderAction(action, path)} /></Drawer.Body>
     </Drawer.Dialog></Drawer.Content></Drawer.Backdrop>
     <DiagnosticsDialog open={diagnosticsOpen} problems={workspace.snapshot.problems} onOpenChange={setDiagnosticsOpen} />
     {operation && <VaultPathDialog open title="Переместить" label="Путь" initialPath={operation.path} confirmLabel="Сохранить" onOpenChange={(open) => { if (!open) setOperation(null); }} onSubmit={submitOperation} />}

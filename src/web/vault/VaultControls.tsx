@@ -4,6 +4,14 @@ import { EllipsisVertical } from '@gravity-ui/icons';
 
 export type GravityIcon = (props: SVGProps<SVGSVGElement>) => React.JSX.Element;
 
+export async function copyVaultPath(path: string, showError: (message: string) => void): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(path);
+  } catch {
+    showError('Не удалось скопировать путь к файлу.');
+  }
+}
+
 export function IconButton({ label, icon: Icon, onPress, disabled = false, className = '' }: {
   readonly label: string;
   readonly icon: GravityIcon;

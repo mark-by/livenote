@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Disclosure, Dropdown, Label, Spinner } from '@heroui/react';
-import { ArrowDownToSquare, ArrowsExpand, Copy, FilePlus, Link, Pencil, Scissors, TrashBin } from '@gravity-ui/icons';
+import { useEffect, useId, useRef, useState } from 'react';
+import { Alert, Breadcrumbs, Button, Dropdown, Label, Spinner } from '@heroui/react';
+import { ArrowDownToSquare, ArrowsExpand, Copy, FilePlus, Pencil, Scissors, TrashBin } from '@gravity-ui/icons';
 import type { DiagramFormat, VaultDocument } from '../../shared/types';
 import { downloadTextFile } from '../svgDownload';
 import { LivePreviewEditor } from '../editor/LivePreviewEditor';
 import type { EditorContext, EditorVimMode, LivePreviewEditorHandle, SourceRange } from '../editor/LivePreviewEditor';
 import { DiagramPreview } from '../diagrams';
 import { useVaultDiagrams } from './useVaultDiagrams';
-import { fileName, formatForPath, resolveDocumentLink } from './vaultPaths';
+import { fileName, formatForPath, parentPath, resolveDocumentLink } from './vaultPaths';
 import type { VaultWorkspace } from './useVaultWorkspace';
 
 interface DocumentViewProps {
@@ -17,18 +17,21 @@ interface DocumentViewProps {
   readonly theme: 'light' | 'dark';
   readonly vimEnabled: boolean;
   readonly onVimModeChange: (mode: EditorVimMode) => void;
+  readonly onRevealFolder: (path: string) => void;
 }
 
-export function VaultDocumentView({ workspace, document, active, theme, vimEnabled, onVimModeChange }: DocumentViewProps): React.JSX.Element {
+export function VaultDocumentView({ workspace, document, active, theme, vimEnabled, onVimModeChange, onRevealFolder }: DocumentViewProps): React.JSX.Element {
   const editorRef = useRef<LivePreviewEditorHandle>(null);
   const contextSource = useRef('');
   const [context, setContext] = useState<EditorContext | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const pageId = document.path;
+  const breadcrumbId = useId();
   const draft = workspace.drafts[pageId];
   const source = draft?.source ?? document.source;
   const diagrams = useVaultDiagrams(workspace, document, editorRef);
   const format = formatForPath(pageId);
+  const folders = parentPath(pageId).split('/').filter(Boolean);
 
   useEffect(() => { setContext(null); }, [pageId]);
   useEffect(() => {
@@ -78,8 +81,15 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
     else if (/^https?:\/\//i.test(target)) window.open(target, '_blank', 'noopener,noreferrer');
   };
 
-  return <article className="vault-document" data-page-id={pageId} hidden={!active}
+  return <article className="vault-document" data-page-id={pageId} data-format={format} hidden={!active}
     onPointerDownCapture={(event) => { if (event.button === 0) workspace.keepTab(pageId); }}>
+    {format === 'markdown' && <nav className="vault-document-path" aria-label="Путь к заметке"><Breadcrumbs separator="/">
+      {folders.map((name, index) => {
+        const folder = folders.slice(0, index + 1).join('/');
+        return <Breadcrumbs.Item id={`${breadcrumbId}-${index}`} key={folder} onPress={() => onRevealFolder(folder)}>{name}</Breadcrumbs.Item>;
+      })}
+      <Breadcrumbs.Item id={`${breadcrumbId}-current`}>{document.page.title}</Breadcrumbs.Item>
+    </Breadcrumbs></nav>}
     {(draft?.conflict || localError) && <Alert color="warning" role="alert"><Alert.Content><Alert.Title>Изменения требуют внимания</Alert.Title><Alert.Description>{draft?.conflict ?? localError}</Alert.Description></Alert.Content>
       <div className="vault-alert__actions"><Button size="sm" variant="outline" onPress={() => downloadTextFile(source, fileName(pageId), 'text/markdown')}>Скачать черновик</Button>
         <Button size="sm" variant="danger" onPress={() => workspace.discardDraft(pageId)}>Перечитать и отменить</Button></div>
@@ -92,9 +102,6 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
         onExpand={() => diagrams.openView({ from: 0, to: source.length, format: format as DiagramFormat, source })}
         onEdit={() => diagrams.openEdit({ from: 0, to: source.length, format: format as DiagramFormat, source })} />
     </div>}
-    {format === 'markdown' && <Disclosure className="vault-backlinks"><Disclosure.Heading><Disclosure.Trigger>Связанные заметки <span>{document.backlinks.length}</span><Disclosure.Indicator /></Disclosure.Trigger></Disclosure.Heading>
-      <Disclosure.Content>{document.backlinks.length === 0 ? <p>На этот документ пока никто не ссылается.</p> : <div className="vault-backlinks__list">{document.backlinks.map((backlink) => <Button key={backlink.pageId} variant="ghost" onPress={() => workspace.openPage(backlink.pageId)}><Link aria-hidden="true" /><span>{backlink.title}</span><small>{backlink.path}</small></Button>)}</div>}</Disclosure.Content>
-    </Disclosure>}
     <Dropdown isOpen={context !== null} onOpenChange={(open) => { if (!open) setContext(null); }}>
       <Dropdown.Trigger aria-label="Контекстное меню документа" className="vault-context-anchor" style={context ? { left: context.clientX, top: context.clientY } : undefined} />
       <Dropdown.Popover><Dropdown.Menu aria-label="Действия документа" onAction={(key) => menuAction(key.toString())}>
