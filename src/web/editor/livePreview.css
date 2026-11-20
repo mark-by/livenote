@@ -224,13 +224,57 @@
   max-inline-size: 100%;
 }
 
-.lp-table:focus-visible {
-  outline: 1px solid var(--separator);
-}
-
 .lp-table :is(th, td) {
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.lp-table [data-table-editable] :is(th, td) {
+  cursor: text;
+}
+
+.lp-table :is(th, td):has(.lp-table-input) {
+  position: relative;
+}
+
+.lp-table .lp-table-input {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: calc(var(--spacing) / 2);
+  width: calc(100% - var(--spacing));
+  height: 100%;
+  min-height: 0;
+  padding-block: 0;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  text-align: inherit;
+}
+
+.lp-table th .lp-table-input {
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: var(--field-background);
+  color: var(--field-foreground);
+}
+
+.lp-table td textarea.lp-table-input {
+  padding: inherit;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overscroll-behavior: contain;
+}
+
+.lp-table-menu-anchor {
+  position: fixed;
+  width: 1px;
+  min-width: 1px;
+  height: 1px;
+  min-height: 1px;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 @media (max-width: 40rem) {

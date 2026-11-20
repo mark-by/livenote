@@ -17,12 +17,17 @@ fn local_site(url: &Url) -> bool {
 fn local_navigation(url: &Url) -> bool {
     local_site(url)
         || url.as_str() == "about:blank"
-        || (url.scheme() == "blob" && Url::parse(url.path()).is_ok_and(|origin| local_site(&origin)))
+        || (url.scheme() == "blob"
+            && Url::parse(url.path()).is_ok_and(|origin| local_site(&origin)))
 }
 
-fn builder<'a>(app: &'a AppHandle, label: &str, url: Url) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
+fn builder<'a>(
+    app: &'a AppHandle,
+    label: &str,
+    url: Url,
+) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
     let parent = app.clone();
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+    let window = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title("LiveNote")
         .inner_size(1240.0, 820.0)
         // Дерево файлов обрабатывает перетаскивание через события HTML5.
@@ -32,7 +37,10 @@ fn builder<'a>(app: &'a AppHandle, label: &str, url: Url) -> WebviewWindowBuilde
             if url.as_str() == "about:blank" || local_site(&url) {
                 // Меню сначала резервирует пустое окно, затем открывает в нём выбранное хранилище.
                 let label = format!("vault-{}", NEXT_WINDOW.fetch_add(1, Ordering::Relaxed));
-                match builder(&parent, &label, url).window_features(features).build() {
+                match builder(&parent, &label, url)
+                    .window_features(features)
+                    .build()
+                {
                     Ok(window) => return NewWindowResponse::Create { window },
                     Err(error) => eprintln!("Не удалось открыть окно LiveNote: {error}"),
                 }
@@ -42,7 +50,17 @@ fn builder<'a>(app: &'a AppHandle, label: &str, url: Url) -> WebviewWindowBuilde
                 eprintln!("Не удалось открыть ссылку в системном браузере: {error}");
             }
             NewWindowResponse::Deny
-        })
+        });
+
+    #[cfg(target_os = "macos")]
+    let window = window
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 24.0))
+        .accept_first_mouse(true)
+        .initialization_script("window.__LIVENOTE_MACOS_TITLEBAR__ = true;");
+
+    window
 }
 
 pub(super) async fn open(app: &AppHandle, shutdown: &CancellationToken) -> Result<()> {

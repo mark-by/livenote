@@ -130,20 +130,24 @@ test('Таблица не исчезает и не меняет высоту п�
   assert.equal(remount.rows, rows.length + 1);
 });
 
-test('Ячейка открывает исходный Markdown и изменение можно отменить', { timeout }, async t => {
+test('Ячейка открывает поле на месте, сохраняет Markdown и поддерживает отмену', { timeout }, async t => {
   const source = 'Вступление\n\n| Имя | Число |\n| --- | --- |\n| Один | два |\n\nПосле';
   const page = await fixture(t, source);
 
   await page.getByRole('gridcell', { name: 'два' }).click();
-  await expect(page.getByRole('textbox')).toContainText('| Один | два |');
-  const selection = JSON.parse(await page.locator('[data-selection]').textContent());
-  assert.ok(selection.from >= source.indexOf('| два') && selection.from <= source.indexOf('| два') + 2);
-  await page.keyboard.insertText('новое ');
-  await expect(page.locator('[data-source]')).toContainText('новое');
-  await page.keyboard.press('Meta+z');
+  const grid = page.getByRole('grid', { name: 'Таблица Markdown' });
+  const input = grid.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue('два');
+  await input.fill('три | четыре');
+  await input.press('Enter');
+  const updated = grid.getByRole('gridcell', { name: 'три | четыре' });
+  await expect(updated).toBeVisible();
+  await expect(page.locator('[data-source]')).toHaveText(source.replace('два', 'три \\| четыре'));
+  await expect(updated).toBeFocused();
+  await updated.press('ControlOrMeta+z');
   await expect(page.locator('[data-source]')).toHaveText(source);
-  await page.locator('.cm-line').filter({ hasText: 'Вступление' }).click();
-  await expect(page.getByRole('gridcell', { name: 'два' })).toBeVisible();
+  await expect(grid.getByRole('gridcell', { name: 'два' })).toBeVisible();
 });
 
 test('GFM-таблица сохраняет пустые ячейки, оформление и безопасные ссылки', { timeout }, async t => {
@@ -161,14 +165,75 @@ test('GFM-таблица сохраняет пустые ячейки, офор�
   await expect(page.locator('[data-source]')).toHaveText(source);
 });
 
+test('Клик по соседней ячейке сохраняет предыдущую и сразу открывает новое поле', { timeout }, async t => {
+  // Arrange: начать правку первой ячейки строки.
+  const source = 'До\n\n| A | B |\n| --- | --- |\n| один | два |';
+  const page = await fixture(t, source);
+  await page.getByRole('rowheader', { name: 'один' }).click();
+  const input = page.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await input.fill('новое значение');
+
+  // Act: перейти во вторую ячейку одним кликом без Enter.
+  await page.getByRole('gridcell', { name: 'два' }).click();
+
+  // Assert: первая правка сохранена, а поле ввода уже во второй ячейке.
+  await expect(page.locator('[data-source]')).toHaveText(source.replace('один', 'новое значение'));
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue('два');
+});
+
+test('Длинный текст при редактировании переносится внутри ячейки', { timeout }, async t => {
+  // Arrange: длинный текст, который занимает несколько строк таблицы.
+  const value = 'Товар, цена на который определяется за единицу веса. '.repeat(16).trim();
+  const page = await fixture(t, `До\n\n| Товар | Определение |\n| --- | --- |\n| Весовой | ${value} |`);
+  const cell = page.getByRole('gridcell', { name: value });
+
+  // Act: открыть поле с длинным текстом.
+  await cell.click();
+
+  // Assert: текст не прокручивается по горизонтали и виден на нескольких строках.
+  const field = page.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await expect(field).toHaveValue(value);
+  const size = await field.evaluate(element => {
+    const { lineHeight, paddingTop, paddingBottom } = getComputedStyle(element);
+    return {
+      lines: (element.clientHeight - parseFloat(paddingTop) - parseFloat(paddingBottom)) / parseFloat(lineHeight),
+      horizontalOverflow: element.scrollWidth - element.clientWidth
+    };
+  });
+  assert.ok(size.lines >= 2, `Видимых строк: ${size.lines}`);
+  assert.ok(size.horizontalOverflow <= 1, `Горизонтальное переполнение: ${size.horizontalOverflow}`);
+});
+
+test('Закрытие меню возвращает фокус в поле и сохраняет черновик ячейки', { timeout }, async t => {
+  // Arrange: изменить текст, но не применять правку.
+  const source = 'До\n\n| A | B |\n| --- | --- |\n| один | два |';
+  const page = await fixture(t, source);
+  await page.getByRole('gridcell', { name: 'два' }).click();
+  const field = page.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await field.fill('Черновик');
+
+  // Act: вызвать меню правым кликом прямо в поле и закрыть его.
+  await field.click({ button: 'right' });
+  const menu = page.getByRole('menu', { name: 'Действия с таблицей' });
+  await expect(menu).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  // Assert: правка ещё не записана, и её можно продолжить.
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue('Черновик');
+  await expect(page.locator('[data-source]')).toHaveText(source);
+});
+
 test('Таблица внутри цитаты отображает строки без потери исходника', { timeout }, async t => {
   const source = 'До\n\n> | A | B |\n> | --- | --- |\n> | один | два |\n\nПосле';
   const page = await fixture(t, source);
 
   await page.getByRole('gridcell', { name: 'два' }).click();
-  const selection = JSON.parse(await page.locator('[data-selection]').textContent());
-  assert.ok(selection.from >= source.indexOf('| два') && selection.from <= source.indexOf('| два') + 2);
-  await expect(page.locator('[data-source]')).toHaveText(source);
+  const input = page.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await input.fill('три');
+  await input.press('Enter');
+  await expect(page.locator('[data-source]')).toHaveText(source.replace('> | один | два |', '> | один | три |'));
 });
 
 test('Таблица без строк показывает заголовок и не изменяет Markdown', { timeout }, async t => {
@@ -178,6 +243,25 @@ test('Таблица без строк показывает заголовок �
   await expect(page.getByRole('columnheader', { name: 'A' })).toBeVisible();
   await expect(page.getByRole('grid', { name: 'Таблица Markdown' }).getByRole('row')).toHaveCount(1);
   await expect(page.locator('[data-source]')).toHaveText(source);
+});
+
+test('Из заголовка можно добавить первую строку, не удаляя обязательные части таблицы', { timeout }, async t => {
+  // Arrange: открыть меню с клавиатуры в единственной колонке таблицы без строк.
+  const source = 'До\n\n| A |\n| --- |\n\nПосле';
+  const page = await fixture(t, source);
+  await page.getByRole('columnheader', { name: 'A' }).press('Shift+F10');
+  const menu = page.getByRole('menu', { name: 'Действия с таблицей' });
+  await expect(menu.getByRole('menuitem', { name: 'Удалить колонку' })).toBeDisabled();
+  await expect(menu.getByRole('menuitem', { name: 'Удалить строку' })).toBeDisabled();
+
+  // Act: вставить строку после заголовка.
+  await menu.getByRole('menuitem', { name: 'Добавить строку' }).press('ArrowRight');
+  await expect(page.getByRole('menuitem', { name: 'Перед' })).toBeDisabled();
+  await page.getByRole('menuitem', { name: 'После' }).click();
+
+  // Assert: пустая строка отобразилась и Markdown остался таблицей.
+  await expect(page.getByRole('grid').getByRole('row')).toHaveCount(2);
+  await expect(page.locator('[data-source]')).toHaveText(source.replace('| --- |', '| --- |\n|  |'));
 });
 
 test('Таблица в начале документа отображается до первого ввода', { timeout }, async t => {
@@ -196,19 +280,27 @@ test('Режим только чтения не раскрывает исход�
   await page.getByRole('gridcell', { name: 'два' }).click();
 
   await expect(page.getByRole('grid', { name: 'Таблица Markdown' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Содержимое ячейки' })).toHaveCount(0);
+  await page.getByRole('gridcell', { name: 'два' }).click({ button: 'right' });
+  await expect(page.getByRole('menu', { name: 'Действия с таблицей' })).toHaveCount(0);
   await expect(page.locator('[data-source]')).toHaveText(source);
 });
 
-test('Таблица открывает Markdown с клавиатуры', { timeout }, async t => {
+test('Заголовок колонки можно переименовать с клавиатуры', { timeout }, async t => {
   const source = 'До\n\n| A | B |\n| --- | --- |\n| один | два |';
   const page = await fixture(t, source);
 
-  await page.locator('.lp-table').focus();
-  await page.keyboard.press('Enter');
+  const column = page.getByRole('columnheader', { name: 'B' });
+  await column.press('Enter');
+  const input = page.getByRole('textbox', { name: 'Название колонки' });
+  await expect(input).toBeFocused();
+  await expect(input).toHaveCSS('outline-style', 'none');
+  await expect(input).toHaveCSS('box-shadow', 'none');
+  await input.fill('Итог');
+  await input.press('Enter');
 
-  await expect(page.getByRole('textbox')).toBeFocused();
-  await expect(page.getByRole('textbox')).toContainText('| один | два |');
-  await expect(page.locator('[data-source]')).toHaveText(source);
+  await expect(page.getByRole('columnheader', { name: 'Итог' })).toBeVisible();
+  await expect(page.locator('[data-source]')).toHaveText(source.replace('| A | B |', '| A | Итог |'));
 });
 
 test('Перемещение курсора вне таблицы не пересоздаёт её', { timeout }, async t => {
@@ -224,20 +316,54 @@ test('Перемещение курсора вне таблицы не пере�
   await expect(editor).toBeFocused();
 });
 
-test('Vim редактирует и отменяет изменение исходника таблицы', { timeout }, async t => {
+test('Escape отменяет редактирование ячейки в режиме Vim', { timeout }, async t => {
   const source = 'До\n\n| A | B |\n| --- | --- |\n| один | два |';
   const page = await fixture(t, source);
   await page.getByRole('button', { name: 'Vim', exact: true }).click();
   await page.getByRole('gridcell', { name: 'два' }).click();
 
-  await page.keyboard.press('i');
-  await page.keyboard.insertText('новое');
-  await page.keyboard.press('Escape');
-  await expect(page.locator('[data-source]')).toContainText('новое');
-  await page.keyboard.press('u');
+  const input = page.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await input.fill('новое');
+  await input.press('Escape');
 
   await expect(page.locator('[data-source]')).toHaveText(source);
+  await expect(page.getByRole('gridcell', { name: 'два' })).toBeFocused();
 });
+
+for (const action of [
+  { group: 'Добавить колонку', item: 'Перед', headers: ['', 'A', 'B'], rows: [['', 'один', 'два']] },
+  { group: 'Добавить колонку', item: 'После', headers: ['A', '', 'B'], rows: [['один', '', 'два']] },
+  { item: 'Удалить колонку', headers: ['B'], rows: [['два']] },
+  { group: 'Добавить строку', item: 'Перед', headers: ['A', 'B'], rows: [['', ''], ['один', 'два']] },
+  { group: 'Добавить строку', item: 'После', headers: ['A', 'B'], rows: [['один', 'два'], ['', '']] },
+  { item: 'Удалить строку', headers: ['A', 'B'], rows: [] },
+]) {
+  test(`Меню таблицы: ${[action.group, action.item].filter(Boolean).join(' → ')}`, { timeout }, async t => {
+    // Arrange: таблица в цитате, с которой не должно смешаться меню документа.
+    const source = 'До\n\n> | A | B |\n> | :--- | ---: |\n> | один | два |\n\nПосле';
+    const page = await fixture(t, source);
+    const grid = page.getByRole('grid', { name: 'Таблица Markdown' });
+    const cell = grid.getByRole('rowheader', { name: 'один' });
+
+    // Act: выбрать действие для первой ячейки.
+    await cell.click({ button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Действия с таблицей' });
+    await expect(menu).toBeVisible();
+    if (action.group) await menu.getByRole('menuitem', { name: action.group }).press('ArrowRight');
+    await page.getByRole('menuitem', { name: action.item, exact: true }).click();
+
+    // Assert: колонки и строки сохранили порядок, а текст вокруг таблицы не изменился.
+    const actual = await grid.getByRole('row').evaluateAll(rows => rows.map(row => Array.from(row.cells, cell => cell.textContent)));
+    assert.deepEqual(actual, [action.headers, ...action.rows]);
+    await expect(page.locator('[data-context]')).toHaveText('null');
+    const next = await page.locator('[data-source]').textContent();
+    const [before, table, after] = next.split('\n\n');
+    assert.equal(before, 'До');
+    assert.equal(after, 'После');
+    assert.ok(table.split('\n').every(row => row.startsWith('> |')));
+    assert.ok(table.split('\n')[1].endsWith('---: |'));
+  });
+}
 
 test('Обычный клик редактирует ссылку, Cmd-клик и Cmd-Enter вызывают открытие цели', { timeout }, async t => {
   const page = await fixture(t, '[Документ](./Другой.md) и [[Работа/План.md|План]]');

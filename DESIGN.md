@@ -74,6 +74,8 @@ HeroUI inherits the application's font family and uses Tailwind's type scale. Pr
 
 ## Layout
 
+Layout: окно macOS — системные кнопки, история и вкладки в общей верхней строке. Дерево и редактор находятся под ней. Горизонтальная прокрутка остаётся в списке вкладок. Свободное место перед меню служит для перемещения окна.
+
 The spacing base is `--spacing: 0.25rem`, giving the system a 4px rhythm through Tailwind spacing utilities.
 
 - Use consistent Tailwind gaps and padding rather than one-off values.

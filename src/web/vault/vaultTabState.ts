@@ -1,4 +1,4 @@
-import { activePanePath, prunePanes, selectPanePath, splitPane, vaultPanes } from './vaultPaneState';
+import { activePanePath, prunePanes, remapPanes, selectPanePath, splitPane, vaultPanes } from './vaultPaneState';
 import type { SplitDirection, VaultPaneLayout } from './vaultPaneState';
 
 export interface VaultTabState {
@@ -6,6 +6,16 @@ export interface VaultTabState {
   readonly activeId: string | null;
   readonly previewId: string | null;
   readonly layout?: VaultPaneLayout;
+}
+
+export function remapVaultTabPaths(state: VaultTabState, remap: (path: string) => string): VaultTabState {
+  const { openTabs, activeId, previewId, layout } = state;
+  return {
+    openTabs: openTabs.map(remap),
+    activeId: activeId === null ? null : remap(activeId),
+    previewId: previewId === null ? null : remap(previewId),
+    ...(layout && { layout: remapPanes(layout, remap) })
+  };
 }
 
 export function openVaultTab(state: VaultTabState, id: string, canReplacePreview: boolean): VaultTabState {

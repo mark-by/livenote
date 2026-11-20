@@ -12,6 +12,7 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
 }): React.JSX.Element {
   const { openTabs, activeId, snapshot, documents, drafts, history } = workspace;
   const [context, setContext] = useState<{ readonly id: string; readonly x: number; readonly y: number } | null>(null);
+  const hasMacTitlebar = '__LIVENOTE_MACOS_TITLEBAR__' in window;
   const contextIndex = context === null ? -1 : openTabs.indexOf(context.id);
   // React Aria требует выбранную вкладку, даже если активная область ещё пуста.
   const selectedTab = activeId ?? openTabs[0];
@@ -41,7 +42,7 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
   const tabAt = (target: EventTarget): HTMLElement | null =>
     target instanceof Element ? target.closest<HTMLElement>('[data-vault-tab]') : null;
 
-  return <div className="vault-tabs-row">
+  return <div className="vault-tabs-row" data-macos-titlebar={hasMacTitlebar ? '' : undefined}>
     {treeToggle}
     <div className="vault-history" aria-label="История навигации">
       <IconButton label="Назад" icon={ArrowLeft} disabled={history.index <= 0} onPress={workspace.goBack} />
@@ -83,6 +84,7 @@ export function VaultDocumentTabs({ workspace, treeToggle, mainMenu }: {
       })}</Tabs.List></Tabs.ListContainer>
     </Tabs>
     </div>
+    {hasMacTitlebar && <div className="vault-window-drag" data-tauri-drag-region="" aria-hidden="true" />}
     {mainMenu}
     <Dropdown isOpen={contextIndex >= 0} onOpenChange={(open) => { if (!open) setContext(null); }}>
       <Dropdown.Trigger aria-label="Контекстное меню вкладки" excludeFromTabOrder className="vault-context-anchor"

@@ -1,39 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { LiveEvent, VaultDocument, VaultMoveResult, VaultSearchHit, VaultSnapshot, WriteVaultDocumentBody } from '../../shared/types';
+import type { LiveEvent, VaultDocument, VaultMoveResult, VaultSearchHit, VaultSnapshot } from '../../shared/types';
 import {
   ApiError, clearToken, createPage, createVaultFolder, deletePage, deleteVaultFolder, getToken,
-  getVaultDocument, getVaultSnapshot, moveVaultFolder, moveVaultPage, putVaultDocument,
+  getVaultDocument, getVaultSnapshot, moveVaultFolder, moveVaultPage,
   searchVault, setToken, UNAUTHORIZED_EVENT
 } from '../api';
 import { connectVaultEvents } from './vaultEvents';
+import { TEXT_WRITE_CONFLICT, VaultDocumentWrites } from './vaultDocumentWrites';
+import type { DiagramWrite, VaultDraft } from './vaultDocumentWrites';
 import { remapPath } from './vaultPaths';
-import { remapPanes, resizeSplit } from './vaultPaneState';
+import { resizeSplit } from './vaultPaneState';
 import type { SplitDirection } from './vaultPaneState';
-import { closeVaultPane, focusVaultPane, openVaultTab, removeVaultTabs, splitVaultTab } from './vaultTabState';
+import { closeVaultPane, focusVaultPane, openVaultTab, remapVaultTabPaths, removeVaultTabs, splitVaultTab } from './vaultTabState';
 import type { VaultTabState } from './vaultTabState';
 
 const STORAGE_TABS = 'livenote_open_tabs';
 const STORAGE_ACTIVE = 'livenote_active_tab';
 const EMPTY_SNAPSHOT: VaultSnapshot = { pages: [], files: [], folders: [''], treeVersion: '', tags: [], problems: [] };
-
-export interface VaultDraft {
-  readonly source: string;
-  readonly baseRevision: number;
-  readonly baseVersion: string;
-  readonly epoch: number;
-  readonly saving: boolean;
-  readonly modalOpen: boolean;
-  readonly externalChange: boolean;
-  readonly conflict: string | null;
-}
-
-export interface DiagramWrite {
-  readonly draftEpoch: number;
-  readonly draftSource: string;
-  readonly source: string;
-  readonly assets?: WriteVaultDocumentBody['assets'];
-  readonly references?: WriteVaultDocumentBody['references'];
-}
 
 interface HistoryState { readonly entries: readonly string[]; readonly index: number }
 
@@ -94,8 +77,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
 
   const loadsRef = useRef(new Map<string, symbol>());
   const snapshotRequestRef = useRef(0);
-  const saveChains = useRef(new Map<string, Promise<void>>());
-  const ownRevisionsRef = useRef(new Map<string, Set<number>>());
+  const [documentWrites] = useState(() => new VaultDocumentWrites());
   const movingRef = useRef(false);
   const deferredEventsRef = useRef(false);
   const followRef = useRef(followEvents);
@@ -117,9 +99,9 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
 
   const protectsTab = useCallback((pageId: string): boolean => {
     const draft = draftsRef.current[pageId];
-    return isDirty(pageId) || saveChains.current.has(pageId)
+    return isDirty(pageId) || documentWrites.hasPending(pageId)
       || draft?.saving === true || draft?.modalOpen === true || draft?.conflict != null;
-  }, [draftsRef, isDirty]);
+  }, [documentWrites, draftsRef, isDirty]);
 
   const keepTab = useCallback((pageId: string): void => {
     setTabs((current) => current.previewId === pageId ? { ...current, previewId: null } : current);
@@ -132,13 +114,13 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
   const clearTabData = useCallback((ids: ReadonlySet<string>): void => {
     for (const id of ids) {
       loadsRef.current.delete(id);
-      ownRevisionsRef.current.delete(id);
+      documentWrites.forget(id);
     }
     setDocuments((previous) => withoutTabs(previous, ids));
     setDrafts((previous) => withoutTabs(previous, ids));
     setFragmentTarget((target) => target && ids.has(target.pageId) ? null : target);
     setFollowTarget((target) => target && ids.has(target.pageId) ? null : target);
-  }, [setDocuments, setDrafts]);
+  }, [documentWrites, setDocuments, setDrafts]);
 
   const loadDocument = useCallback(async (pageId: string, discard = false, followEvent?: LiveEvent): Promise<void> => {
     if (!tabsRef.current.openTabs.includes(pageId)) return;
@@ -148,8 +130,10 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     try {
       const document = await getVaultDocument(pageId);
       if (loadsRef.current.get(pageId) !== request) return;
+      if (documentWrites.deferLoad(pageId)) return;
       const currentDraft = draftsRef.current[pageId];
       const previousDocument = documentsRef.current[pageId];
+      if (currentDraft?.modalOpen && currentDraft.externalChange && currentDraft.source === previousDocument?.source) return;
       const protectedDraft = protectsTab(pageId);
       if (followEvent && followRef.current && tabsRef.current.activeId === pageId && !protectedDraft) {
         const previous = previousDocument;
@@ -169,7 +153,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
       setDocuments((previous) => ({ ...previous, [pageId]: document }));
       setDrafts((previous) => {
         if (!currentDraft || (discard && currentDraft === draftAtStart && !currentDraft.saving && !currentDraft.modalOpen
-            && !saveChains.current.has(pageId))) return { ...previous, [pageId]: freshDraft(document) };
+            && !documentWrites.hasPending(pageId))) return { ...previous, [pageId]: freshDraft(document) };
         if (document.version !== currentDraft.baseVersion) {
           if (!protectedDraft) return { ...previous, [pageId]: freshDraft(document) };
           if (previousDocument?.version !== document.version) return { ...previous, [pageId]: { ...currentDraft, externalChange: true } };
@@ -185,7 +169,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     } finally {
       if (loadsRef.current.get(pageId) === request) loadsRef.current.delete(pageId);
     }
-  }, [documentsRef, draftsRef, patchDraft, protectsTab, setDocuments, setDrafts, tabsRef]);
+  }, [documentWrites, documentsRef, draftsRef, patchDraft, protectsTab, setDocuments, setDrafts, tabsRef]);
 
   const removeTabs = useCallback((ids: readonly string[], reportBlocked = false): void => {
     const current = tabsRef.current;
@@ -272,50 +256,37 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     void activatePage(pageId, fromHistory, followEvent);
   }, [activatePage]);
 
+  const writeDocument = useCallback((pageId: string, draft: VaultDraft, diagram?: DiagramWrite): Promise<VaultDocument> => {
+    return documentWrites.put(pageId, { draft, diagram }, {
+      draft: () => draftsRef.current[pageId],
+      patchDraft: (patch) => patchDraft(pageId, patch),
+      publish: (saved) => {
+        loadsRef.current.delete(pageId);
+        setDocuments((current) => ({ ...current, [pageId]: saved }));
+      },
+      reload: () => { void loadDocument(pageId); }
+    });
+  }, [documentWrites, draftsRef, loadDocument, patchDraft, setDocuments]);
+
   const saveDraft = useCallback((pageId: string): Promise<void> => {
     if (movingRef.current || !tabsRef.current.openTabs.includes(pageId)) return Promise.resolve();
-    const previous = saveChains.current.get(pageId) ?? Promise.resolve();
-    const next = previous.then(async () => {
+    return documentWrites.enqueue(pageId, async () => {
       const draft = draftsRef.current[pageId];
       if (!draft || draft.conflict || draft.modalOpen) return;
       const document = documentsRef.current[pageId];
       if (document && draft.source === document.source) return;
-      const captured = draft;
-      patchDraft(pageId, { saving: true });
       setBusy(pageId);
       try {
-        const saved = await putVaultDocument(pageId, {
-          expectedRevision: captured.baseRevision, expectedVersion: captured.baseVersion, source: captured.source
-        });
-        const own = ownRevisionsRef.current.get(pageId) ?? new Set<number>();
-        own.add(saved.page.revision);
-        ownRevisionsRef.current.set(pageId, own);
-        loadsRef.current.delete(pageId);
-        setDocuments((current) => ({ ...current, [pageId]: saved }));
-        setDrafts((current) => {
-          const latest = current[pageId];
-          if (!latest) return current;
-          return { ...current, [pageId]: { ...latest, baseRevision: saved.page.revision,
-            baseVersion: saved.version, saving: false, externalChange: false, conflict: null } };
-        });
+        await writeDocument(pageId, draft);
         void refresh();
       } catch (saveError) {
-        setDrafts((current) => {
-          const latest = current[pageId];
-          if (!latest) return current;
-          const conflict = saveError instanceof ApiError && saveError.status === 409;
-          return { ...current, [pageId]: { ...latest, saving: false, conflict: conflict
-            ? 'Документ изменился вне этого редактора. Автосохранение остановлено; черновик и история редактирования сохранены.'
-            : message(saveError) } };
-        });
+        const conflict = saveError instanceof ApiError && saveError.status === 409;
+        patchDraft(pageId, { conflict: conflict ? TEXT_WRITE_CONFLICT : message(saveError) });
       } finally {
         setBusy(null);
       }
     });
-    saveChains.current.set(pageId, next);
-    void next.then(() => { if (saveChains.current.get(pageId) === next) saveChains.current.delete(pageId); });
-    return next;
-  }, [documentsRef, draftsRef, patchDraft, refresh, setDocuments, setDrafts, tabsRef]);
+  }, [documentWrites, documentsRef, draftsRef, patchDraft, refresh, tabsRef, writeDocument]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -359,8 +330,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
         else removeTabs([event.pageId]);
         return;
       }
-      const own = ownRevisionsRef.current.get(event.pageId);
-      if (own?.delete(event.revision)) return;
+      if (documentWrites.observe(event)) return;
       if (protectsTab(event.pageId)) {
         patchDraft(event.pageId, { externalChange: true });
       } else {
@@ -376,10 +346,15 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
       onPageCreated: onEvent, onPageUpdated: onEvent, onPageDeleted: onEvent,
       onPageMoved: onEvent, onVaultUpdated: () => { if (movingRef.current) deferredEventsRef.current = true; else void refresh(); },
       onBlockCreated: onEvent, onBlockUpdated: onEvent, onBlockDeleted: onEvent,
-      onOpen: () => { void refresh(); for (const id of tabsRef.current.openTabs) if (!protectsTab(id)) void loadDocument(id); }
+      onOpen: () => {
+        void refresh();
+        for (const id of tabsRef.current.openTabs) {
+          if (!documentWrites.deferLoad(id) && !protectsTab(id)) void loadDocument(id);
+        }
+      }
     }, vaultId);
     return () => connection.close();
-  }, [ready, loadDocument, openPage, patchDraft, protectsTab, refresh, removeTabs, tabsRef, vaultId]);
+  }, [ready, documentWrites, loadDocument, openPage, patchDraft, protectsTab, refresh, removeTabs, tabsRef, vaultId]);
 
   useEffect(() => {
     if (!deferredEventsRef.current || movingRef.current) return;
@@ -412,56 +387,34 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
   const setModalOpen = useCallback((pageId: string, modalOpen: boolean): void => {
     if (modalOpen) keepTab(pageId);
     patchDraft(pageId, { modalOpen });
-  }, [keepTab, patchDraft]);
+    const draft = draftsRef.current[pageId];
+    if (!modalOpen && draft?.externalChange && !draft.conflict && !isDirty(pageId)) void loadDocument(pageId);
+  }, [draftsRef, isDirty, keepTab, loadDocument, patchDraft]);
 
   const commitDiagram = useCallback(async (pageId: string, write: DiagramWrite): Promise<VaultDocument> => {
     if (movingRef.current) throw new Error('Дождитесь завершения перемещения.');
     keepTab(pageId);
-    const previous = saveChains.current.get(pageId) ?? Promise.resolve();
-    let result: VaultDocument | null = null;
-    const next = previous.then(async () => {
+    return documentWrites.enqueue(pageId, async () => {
       const draft = draftsRef.current[pageId];
       if (!draft || draft.epoch !== write.draftEpoch || draft.source !== write.draftSource) {
         throw new Error('Документ изменился после открытия диаграммы. Закройте диалог и повторите действие.');
       }
       if (draft.conflict) throw new Error(draft.conflict);
-      patchDraft(pageId, { saving: true });
       try {
-        const saved = await putVaultDocument(pageId, {
-          expectedRevision: draft.baseRevision, expectedVersion: draft.baseVersion, source: write.source,
-          ...(write.assets ? { assets: write.assets } : {}), ...(write.references ? { references: write.references } : {})
-        });
-        const own = ownRevisionsRef.current.get(pageId) ?? new Set<number>();
-        own.add(saved.page.revision);
-        ownRevisionsRef.current.set(pageId, own);
-        result = saved;
-        loadsRef.current.delete(pageId);
-        setDocuments((current) => ({ ...current, [pageId]: saved }));
-        setDrafts((current) => current[pageId] ? { ...current, [pageId]: { ...current[pageId],
-          source: saved.source, baseRevision: saved.page.revision, baseVersion: saved.version,
-          epoch: current[pageId].epoch + 1, saving: false, externalChange: false, conflict: null } } : current);
+        const saved = await writeDocument(pageId, draft, write);
         void refresh();
+        return saved;
       } catch (writeError) {
-        patchDraft(pageId, {
-          saving: false,
-          ...(writeError instanceof ApiError && writeError.status === 409 ? {
-            conflict: 'Файл или связанная схема изменились вне LiveNote. Черновик диаграммы сохранён в открытом диалоге.'
-          } : {})
-        });
+        if (writeError instanceof ApiError && writeError.status === 409) {
+          patchDraft(pageId, { conflict: 'Файл или связанная схема изменились вне LiveNote. Черновик диаграммы сохранён в открытом диалоге.' });
+        }
         throw writeError;
       }
     });
-    const settled = next.then(() => undefined, () => undefined);
-    saveChains.current.set(pageId, settled);
-    void settled.then(() => { if (saveChains.current.get(pageId) === settled) saveChains.current.delete(pageId); });
-    await next;
-    if (!result) throw new Error('Сервер не вернул сохранённый документ.');
-    return result;
-  }, [draftsRef, keepTab, patchDraft, refresh, setDocuments, setDrafts]);
+  }, [documentWrites, draftsRef, keepTab, patchDraft, refresh, writeDocument]);
 
   const applyMoveResult = useCallback(async (result: VaultMoveResult): Promise<void> => {
     const remap = (path: string): string => remapPath(path, result.moved);
-    const remapId = (path: string | null): string | null => path === null ? null : remap(path);
     const previousTabs = tabsRef.current.openTabs;
     const updatedPaths = new Set(result.updatedPaths);
     const reloadPaths = new Set(updatedPaths);
@@ -470,13 +423,10 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
       if (nextPath === path && !updatedPaths.has(path)) continue;
       loadsRef.current.delete(path);
       loadsRef.current.delete(nextPath);
-      ownRevisionsRef.current.delete(path);
+      documentWrites.forget(path);
       reloadPaths.add(nextPath);
     }
-    setTabs((previous) => ({
-      openTabs: previous.openTabs.map(remap), activeId: remapId(previous.activeId), previewId: remapId(previous.previewId),
-      ...(previous.layout && { layout: remapPanes(previous.layout, remap) })
-    }));
+    setTabs(previous => remapVaultTabPaths(previous, remap));
     setHistory((previous) => ({ ...previous, entries: previous.entries.map(remap) }));
     setFragmentTarget((target) => target && { ...target, pageId: remap(target.pageId) });
     setFollowTarget((target) => target && { ...target, pageId: remap(target.pageId) });
@@ -496,7 +446,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     })));
     await refresh();
     for (const path of reloadPaths) if (!protectsTab(path)) void loadDocument(path);
-  }, [documentsRef, loadDocument, protectsTab, refresh, setDocuments, setDrafts, setHistory, setTabs, tabsRef]);
+  }, [documentWrites, documentsRef, loadDocument, protectsTab, refresh, setDocuments, setDrafts, setHistory, setTabs, tabsRef]);
 
   const move = useCallback(async (pageId: string, path: string): Promise<string | null> => {
     const document = documentsRef.current[pageId];

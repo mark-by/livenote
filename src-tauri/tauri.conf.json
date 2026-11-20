@@ -13,7 +13,21 @@
   "app": {
     "windows": [],
     "security": {
-      "capabilities": []
+      "capabilities": [
+        {
+          "identifier": "macos-titlebar",
+          "platforms": ["macOS"],
+          "windows": ["main", "vault-*"],
+          "local": false,
+          "remote": {
+            "urls": ["http://127.0.0.1:4317/*"]
+          },
+          "permissions": [
+            "core:window:allow-start-dragging",
+            "core:window:allow-internal-toggle-maximize"
+          ]
+        }
+      ]
     }
   },
   "bundle": {

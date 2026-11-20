@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { openVaultTab, removeVaultTabs } from '../src/web/vault/vaultTabState.ts';
+import { remapPath } from '../src/web/vault/vaultPaths.ts';
+import { closeVaultPane, openVaultTab, remapVaultTabPaths, removeVaultTabs, splitVaultTab } from '../src/web/vault/vaultTabState.ts';
 import type { VaultTabState } from '../src/web/vault/vaultTabState.ts';
 
 const first = 'Проект/Первый.md';
@@ -83,4 +84,69 @@ test('после закрытия всех вкладок активная вк�
 
   // Assert: список вкладок и ссылки на вкладки очищены.
   assert.deepEqual(result, { openTabs: [], activeId: null, previewId: null });
+});
+
+test('перенос папки обновляет пути во вложенных панелях', () => {
+  // Arrange: три файла из одной папки открыты в трёх панелях.
+  const unrelated = 'Проект-архив/Заметка.md';
+  const tabs: VaultTabState = { openTabs: [first, next, last, unrelated], activeId: first, previewId: null };
+  const horizontal = splitVaultTab(tabs, next, 'right');
+  const nested = splitVaultTab(horizontal, last, 'down');
+  const moved = [{ from: 'Проект', to: 'Архив/Проект' }];
+  const remap = (path: string) => remapPath(path, moved);
+  const movedFirst = 'Архив/Проект/Первый.md';
+  const movedNext = 'Архив/Проект/Следующий.md';
+  const movedLast = 'Архив/Проект/Последний.md';
+
+  // Act: обновляем пути после переноса папки.
+  const result = remapVaultTabPaths(nested, remap);
+
+  // Assert: порядок вкладок, расположение панелей и фокус не меняются.
+  assert.deepEqual(result, {
+    openTabs: [movedFirst, movedNext, movedLast, unrelated],
+    activeId: movedLast,
+    previewId: null,
+    layout: {
+      focused: 2,
+      root: {
+        kind: 'split', id: 1, direction: 'right', percent: 50,
+        first: { kind: 'pane', id: 0, path: movedFirst },
+        second: {
+          kind: 'split', id: 2, direction: 'down', percent: 50,
+          first: { kind: 'pane', id: 1, path: movedNext },
+          second: { kind: 'pane', id: 2, path: movedLast }
+        }
+      }
+    }
+  });
+});
+
+test('после переноса папки и закрытия активной панели соседняя панель отдаёт новый путь', () => {
+  // Arrange: два файла из одной папки открыты в соседних панелях.
+  const tabs: VaultTabState = { openTabs: [first, next], activeId: first, previewId: null };
+  const split = splitVaultTab(tabs, next, 'right');
+  const moved = [{ from: 'Проект', to: 'Архив/Проект' }];
+  const remap = (path: string) => remapPath(path, moved);
+  const relocated = remapVaultTabPaths(split, remap);
+  const rightPaneId = 1;
+
+  // Act: закрываем активную правую панель.
+  const result = closeVaultPane(relocated, rightPaneId);
+
+  // Assert: активный путь берётся из левой панели после переноса.
+  assert.equal(result.activeId, 'Архив/Проект/Первый.md');
+});
+
+test('новый файл заменяет скрытый предпросмотр после переноса', () => {
+  // Arrange: вкладка предпросмотра открыта, но активна закреплённая вкладка.
+  const tabs: VaultTabState = { openTabs: [first, preview, last], activeId: last, previewId: preview };
+  const moved = [{ from: preview, to: 'Архив/Предпросмотр.md' }];
+  const remap = (path: string) => remapPath(path, moved);
+  const relocated = remapVaultTabPaths(tabs, remap);
+
+  // Act: открываем новый файл с разрешением заменить предпросмотр.
+  const result = openVaultTab(relocated, next, true);
+
+  // Assert: новый файл занимает прежнее место вкладки предпросмотра.
+  assert.deepEqual(result, { openTabs: [first, next, last], activeId: next, previewId: next });
 });

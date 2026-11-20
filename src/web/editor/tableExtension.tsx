@@ -1,16 +1,15 @@
-import { Children, isValidElement } from 'react';
-import type { ReactNode } from 'react';
 import { EditorState, Facet, StateEffect, StateField } from '@codemirror/state';
-import type { Range } from '@codemirror/state';
+import type { ChangeSpec, Range } from '@codemirror/state';
+import { isolateHistory, redo, undo } from '@codemirror/commands';
 import { syntaxTree } from '@codemirror/language';
 import { Decoration, EditorView, ViewPlugin, WidgetType } from '@codemirror/view';
 import type { DecorationSet } from '@codemirror/view';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
-import { Table } from '@heroui/react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { EditableTable } from './EditableTable';
+import { readTable } from './tableSource';
+import type { TableSource } from './tableSource';
 import { markdownDocument } from './markdownNodes';
 
 export const tableLinkHandler = Facet.define<(target: string) => void, ((target: string) => void) | undefined>({
@@ -21,7 +20,7 @@ const focusChanged = StateEffect.define<boolean>();
 const detachedTableLimit = 16;
 
 interface MountedTable {
-  readonly widget: TableWidget;
+  widget: TableWidget;
   readonly element: HTMLElement;
   readonly root: Root;
   readonly observer: ResizeObserver;
@@ -74,49 +73,20 @@ class TableCache {
   }
 }
 
-function headerChildren(children: ReactNode): ReactNode {
-  return Children.toArray(children).flatMap(child => {
-    if (!isValidElement<{ children?: ReactNode }>(child)) return [];
-    return Children.toArray(child.props.children);
-  });
-}
-
-function RenderTable({ source, lineOffsets }: { readonly source: string; readonly lineOffsets: readonly number[] }) {
-  const cellPosition = (position: { line: number; column: number } | undefined) => {
-    if (!position) return 0;
-    const lineOffset = lineOffsets[position.line - 1];
-    return lineOffset === undefined ? 0 : lineOffset + position.column - 1;
-  };
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-    table: ({ children }) => <Table><Table.ScrollContainer>
-      <Table.Content aria-label="Таблица Markdown">{children}</Table.Content>
-    </Table.ScrollContainer></Table>,
-    thead: ({ children }) => <Table.Header>{headerChildren(children)}</Table.Header>,
-    tbody: ({ children }) => <Table.Body>{children}</Table.Body>,
-    tr: ({ children }) => <Table.Row>{children}</Table.Row>,
-    th: ({ children, align, node }) => <Table.Column
-      isRowHeader={node?.position?.start.offset === 0}
-      data-source-pos={cellPosition(node?.position?.start)}
-      style={{ textAlign: align === 'char' ? undefined : align ?? undefined }}>{children}</Table.Column>,
-    td: ({ children, align, node }) => <Table.Cell
-      data-source-pos={cellPosition(node?.position?.start)}
-      style={{ textAlign: align === 'char' ? undefined : align ?? undefined }}>{children}</Table.Cell>,
-    a: ({ href, children }) => <span role="link" className="lp-link" data-link={href || undefined}>{children}</span>
-  }}>{source}</ReactMarkdown>;
-}
-
 class TableWidget extends WidgetType {
   constructor(
     readonly source: string,
     readonly from: number,
     readonly to: number,
-    readonly lineOffsets: readonly number[]
+    readonly raw: string,
+    readonly data: TableSource | null,
+    readonly readOnly: boolean
   ) { super(); }
 
   override eq(other: TableWidget) {
     return this.source === other.source && this.from === other.from && this.to === other.to &&
-      this.lineOffsets.length === other.lineOffsets.length &&
-      this.lineOffsets.every((offset, index) => offset === other.lineOffsets[index]);
+      this.raw === other.raw && this.readOnly === other.readOnly &&
+      this.data?.rows[0]?.prefix === other.data?.rows[0]?.prefix;
   }
 
   override toDOM(view: EditorView) {
@@ -130,44 +100,37 @@ class TableWidget extends WidgetType {
     const element = view.contentDOM.ownerDocument.createElement('div');
     element.className = 'lp-table';
     element.contentEditable = 'false';
-    element.tabIndex = 0;
-    element.setAttribute('aria-label', 'Таблица Markdown. Нажмите Enter для редактирования');
-    element.title = 'Нажмите Enter или выберите ячейку, чтобы изменить Markdown';
-    const edit = (position: number) => {
-      if (view.state.readOnly) return;
-      view.dispatch({ selection: { anchor: position }, scrollIntoView: true });
-      view.focus();
-    };
-    element.addEventListener('click', event => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const link = target.closest<HTMLElement>('[data-link]');
-      if ((event.metaKey || event.ctrlKey) && link?.dataset.link) {
-        view.state.facet(tableLinkHandler)?.(link.dataset.link);
-        event.preventDefault();
-        return;
-      }
-      const cell = target.closest<HTMLElement>('[data-source-pos]');
-      const offset = Number(cell?.dataset.sourcePos ?? 0);
-      edit(Math.min(this.from + offset + 1, this.to));
-    });
-    element.addEventListener('keydown', event => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        edit(Math.min(this.from + 1, this.to));
-      }
-    });
     const root = createRoot(element);
     const observer = new ResizeObserver(() => view.requestMeasure());
     observer.observe(element, { box: 'border-box' });
     const table = { widget: this, element, root, observer, cache };
     mountedTables.set(element, table);
+    this.render(table, view);
+    return element;
+  }
+
+  override updateDOM(element: HTMLElement, view: EditorView) {
+    const table = mountedTables.get(element);
+    if (!table) return false;
+    table.widget = this;
+    this.render(table, view);
+    return true;
+  }
+
+  private render(mounted: MountedTable, view: EditorView) {
     // Выходим из текущего вызова React, но заполняем блок до следующей отрисовки браузера.
     queueMicrotask(() => {
-      if (!mountedTables.has(element)) return;
-      flushSync(() => root.render(<RenderTable source={this.source} lineOffsets={this.lineOffsets} />));
+      if (!mountedTables.has(mounted.element) || mounted.widget !== this) return;
+      const applyChanges = (table: TableSource, changes: ChangeSpec) => {
+        if (!mounted.element.isConnected || mounted.widget.data !== table || view.state.readOnly ||
+          view.state.doc.sliceString(this.from, this.to) !== this.raw) return;
+        const changeSet = view.state.changes(changes);
+        if (!changeSet.empty) view.dispatch({ changes: changeSet, annotations: isolateHistory.of('full') });
+      };
+      flushSync(() => mounted.root.render(<EditableTable source={this.source} table={this.data} readOnly={this.readOnly}
+        onChange={applyChanges} onLink={href => view.state.facet(tableLinkHandler)?.(href)}
+        onHistory={isRedo => { if (!view.state.readOnly) (isRedo ? redo : undo)(view); }} />));
     });
-    return element;
   }
 
   override destroy(element: HTMLElement) {
@@ -175,7 +138,7 @@ class TableWidget extends WidgetType {
     if (!table) return;
     table.observer.disconnect();
     // CodeMirror удаляет блок за пределами окна, но при возврате таблица нужна сразу.
-    if (table.cache) table.cache.keep(table);
+    if (table.cache && !element.querySelector('.lp-table-input, [data-menu-open]')) table.cache.keep(table);
     else unmount(table);
   }
 
@@ -191,18 +154,17 @@ function decorations(state: EditorState, focused: boolean): DecorationSet {
         selection.from <= node.to && selection.to >= node.from);
       if (!active) {
         const lines: string[] = [];
-        const lineOffsets: number[] = [];
         for (let child = node.node.firstChild; child; child = child.nextSibling) {
           if (child.name !== 'TableHeader' && child.name !== 'TableRow' && child.name !== 'TableDelimiter') continue;
           lines.push(state.doc.sliceString(child.from, child.to));
-          lineOffsets.push(child.from - node.from);
         }
         const source = lines.join('\n');
         const definitions = markdownDocument(state.doc).definitionSource;
         const markdown = definitions ? `${source}\n\n${definitions}` : source;
         marks.push(Decoration.replace({
           block: true,
-          widget: new TableWidget(markdown, node.from, node.to, lineOffsets)
+          widget: new TableWidget(markdown, node.from, node.to, state.doc.sliceString(node.from, node.to),
+            readTable(state.doc, node.node), state.readOnly)
         }).range(node.from, node.to));
       }
       return false;

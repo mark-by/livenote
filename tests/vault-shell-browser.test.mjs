@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { chromium, expect, webkit } from 'playwright/test';
 
 const base = process.env.LIVENOTE_TEST_URL;
@@ -30,7 +30,7 @@ const tokens = (document) => ({ expectedRevision: document.page.revision, expect
 const getDocument = async (id) => (await api(`/pages/${encodeURIComponent(id)}/document`)).document;
 const documentRoute = /\/api\/(?:vaults\/[^/]+\/)?pages\/[^/]+\/document$/;
 
-async function fixture(t, source = '# Заголовок\n\nТекст заметки с **акцентом** и #тег.\n\n- первый пункт\n- второй пункт\n\n> Цитата.\n', { mermaidTheme, additionalFile } = {}) {
+async function fixture(t, source = '# Заголовок\n\nТекст заметки с **акцентом** и #тег.\n\n- первый пункт\n- второй пункт\n\n> Цитата.\n', { mermaidTheme, additionalFile, macTitlebar } = {}) {
   const suffix = `shell-${Date.now()}-${sequence++}`;
   const id = `Fixtures/${suffix}/${suffix}.md`;
   await api('/pages', 'POST', { title: suffix, path: id, source });
@@ -41,6 +41,9 @@ async function fixture(t, source = '# Заголовок\n\nТекст заме�
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   if (mermaidTheme) {
     await context.addInitScript((theme) => localStorage.setItem('livenote_mermaid_theme', theme), mermaidTheme);
+  }
+  if (macTitlebar) {
+    await context.addInitScript(() => { window.__LIVENOTE_MACOS_TITLEBAR__ = true; });
   }
   t.after(async () => {
     await context.close();
@@ -75,6 +78,31 @@ const tabTitles = (page) => page.locator('[role="tab"] .vault-tab__label');
 const tabsTimeout = 120_000;
 const mermaidDownloadTimeout = 90_000;
 const erDiagram = '# Схема\n\n```mermaid\nerDiagram\n  SECTOR {\n    int id PK\n    string name\n  }\n```\n';
+
+test('Таблица сохраняет правки ячейки и структуры в заметке хранилища', { timeout: tabsTimeout }, async t => {
+  // Arrange: открыть таблицу в приложении с отдельным хранилищем.
+  const source = '# Результаты\n\n| Имя | Число |\n| --- | ---: |\n| Первый | 1 |\n';
+  const { page, id } = await fixture(t, source);
+  const grid = page.getByRole('grid', { name: 'Таблица Markdown' });
+  const input = grid.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await grid.getByRole('gridcell', { name: '1' }).click();
+  await input.fill('42');
+  await shot(page, 'table-cell-edit');
+
+  // Act: добавить строку из меню открытого поля, не подтверждая правку отдельно.
+  await input.click({ button: 'right' });
+  const menu = page.getByRole('menu', { name: 'Действия с таблицей' });
+  await expect(menu).toBeVisible();
+  await shot(page, 'table-context-menu');
+  await menu.getByRole('menuitem', { name: 'Добавить строку' }).press('ArrowRight');
+  await shot(page, 'table-row-submenu');
+  await page.getByRole('menuitem', { name: 'После' }).click();
+
+  // Assert: сервер вернул Markdown с обеими правками.
+  const expected = source.replace('| Первый | 1 |', '| Первый | 42 |\n|  |  |');
+  await expect.poll(async () => (await getDocument(id)).source).toBe(expected);
+  await expect(grid.getByRole('row')).toHaveCount(3);
+});
 
 async function allowImageClipboard(page) {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(base).origin });
@@ -206,6 +234,29 @@ test('Главное меню находится справа в строке в
   });
   assert.ok(boxes.rowRight - boxes.menuRight <= 12 && boxes.rowTop === 0);
   await shot(page, 'tabs-row-mobile');
+});
+
+test('Верхняя строка macOS оставляет место для системных кнопок', { timeout: tabsTimeout }, async t => {
+  // Arrange: открыть заметку в окне с верхней строкой macOS.
+  const { page } = await fixture(t, undefined, { macTitlebar: true });
+  const row = page.locator('.vault-tabs-row');
+  const tab = row.getByRole('tab', { selected: true });
+  const history = row.getByRole('button', { name: 'Назад', exact: true });
+  const dragRegion = row.locator('[data-tauri-drag-region]');
+
+  // Act: выбрать открытую вкладку.
+  await tab.click();
+
+  // Assert: стрелки находятся за системными кнопками, область перетаскивания не закрывает вкладку.
+  const bounds = await row.boundingBox();
+  const arrow = await history.boundingBox();
+  const tabBounds = await tab.boundingBox();
+  const dragBounds = await dragRegion.boundingBox();
+  assert.ok(bounds && arrow && tabBounds && dragBounds);
+  const systemButtonsRight = 74;
+  assert.ok(arrow.x >= bounds.x + systemButtonsRight);
+  assert.ok(dragBounds.x >= tabBounds.x + tabBounds.width);
+  await shot(page, 'tabs-row-macos');
 });
 
 test('Открытие файлов по очереди заменяет временную вкладку, а выбор закрепляет её', { timeout: tabsTimeout }, async t => {
@@ -568,6 +619,105 @@ test('External 409 keeps local draft and external file without further autosave'
   assert.doesNotMatch((await getDocument(id)).source, /LOCAL\./);
   await expect(page.getByRole('button', { name: 'Скачать черновик' })).toBeVisible();
 });
+
+const delayedWriteCases = [
+  { outcome: 'shows the external document', screenshot: 'external' },
+  { outcome: 'preserves newer typing and reports a conflict', newerEdit: true, screenshot: 'draft' },
+  { outcome: 'shows the external document after closing the saved diagram', diagram: true, screenshot: 'diagram' }
+];
+for (const { outcome, newerEdit, diagram, screenshot } of delayedWriteCases) {
+  test(`Delayed accepted PUT after external SSE ${outcome}`, { timeout: tabsTimeout }, async (t) => {
+    // Arrange: наблюдаем события, которые SharedWorker доставляет редактору.
+    const { page, id } = await fixture(t);
+    await page.addInitScript(() => {
+      window.vaultTestEvents = [];
+      window.SharedWorker = class extends window.SharedWorker {
+        constructor(...args) {
+          super(...args);
+          this.port.addEventListener('message', ({ data }) => {
+            if (data.name === 'open') window.vaultTestEvents.push(data);
+            if (data.name === 'page.updated') window.vaultTestEvents.push(JSON.parse(data.data));
+          });
+        }
+      };
+    });
+    await page.reload();
+    const editor = page.locator(`.vault-document[data-page-id="${id}"] .cm-content`);
+    await expect(editor).toBeVisible();
+    await page.waitForFunction(() => window.vaultTestEvents.some(event => event.name === 'open'));
+    let accept, fail, release;
+    const accepted = new Promise((resolve, reject) => { accept = resolve; fail = reject; });
+    const gate = new Promise(resolve => { release = resolve; });
+    let writes = 0;
+    await page.route(documentRoute, async (route) => {
+      if (route.request().method() !== 'PUT' || ++writes !== 1) return route.continue();
+      try {
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        accept((await response.json()).document);
+        await gate;
+        await route.fulfill({ response });
+      } catch (error) {
+        fail(error);
+        throw error;
+      }
+    });
+
+    // Act: сервер принимает PUT. Независимый клиент меняет файл до доставки ответа.
+    const externalSource = '# Внешняя версия\n\nREMOTE NEXT.\n';
+    const vaultRoot = process.env.LIVENOTE_TEST_VAULT_ROOT;
+    let dialog;
+    try {
+      if (diagram) {
+        await insert(page, 'mermaid');
+        dialog = await diagramDialog(page, 'mermaid');
+        await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
+      } else {
+        await editor.click();
+        await page.keyboard.press('Meta+End');
+        await page.keyboard.type('\n\nLOCAL ACCEPTED.');
+      }
+      const saved = await accepted;
+      assert.match(saved.source, diagram ? /```mermaid/ : /LOCAL ACCEPTED\./);
+      t.diagnostic(`PUT 200 на сервере, ответ удержан: ${saved.version}`);
+      if (newerEdit) await page.keyboard.type(' NEWER TYPING.');
+      await page.waitForFunction(({ id, revision }) => window.vaultTestEvents
+        .some(event => event.pageId === id && event.revision === revision), { id, revision: saved.page.revision });
+      let externalRevision;
+      if (vaultRoot) await writeFile(`${vaultRoot}/${id}`, externalSource);
+      else {
+        const { document } = await api(`/pages/${encodeURIComponent(id)}/document`, 'PUT', { ...tokens(saved), source: externalSource });
+        externalRevision = document.page.revision;
+      }
+      const delivered = await page.waitForFunction(({ id, savedRevision, externalRevision }) => window.vaultTestEvents
+        .find(event => event.pageId === id && event.event === 'page.updated' && event.revision !== savedRevision
+          && (externalRevision === undefined ? event.origin === 'external' : event.revision === externalRevision)),
+      { id, savedRevision: saved.page.revision, externalRevision });
+      t.diagnostic(`Браузер получил SSE до ответа PUT: ${JSON.stringify(await delivered.jsonValue())}`);
+      assert.equal((await getDocument(id)).source, externalSource);
+    } finally {
+      release();
+      t.diagnostic('Доставляем удержанный ответ PUT редактору');
+    }
+
+    // Assert: результат зависит только от наличия более новой локальной правки.
+    try {
+      if (dialog) await expect(dialog).toHaveCount(0);
+      if (newerEdit) {
+        await expect(page.getByRole('button', { name: 'Скачать черновик' })).toBeVisible();
+        await expect(editor).toContainText('LOCAL ACCEPTED. NEWER TYPING.');
+      } else {
+        await expect(editor).toContainText('REMOTE NEXT.');
+        await expect(page.getByRole('button', { name: 'Скачать черновик' })).toHaveCount(0);
+        assert.equal(writes, 1);
+      }
+      assert.equal((await getDocument(id)).source, externalSource);
+    } finally {
+      t.diagnostic(`После ответа PUT, текст редактора: ${await editor.textContent()}`);
+      await shot(page, `document-write-race-${screenshot}`);
+    }
+  });
+}
 
 for (const format of ['bpmn', 'drawio']) {
   test(`${format} показывает имя скачанного SVG поверх редактора`, { timeout: mermaidDownloadTimeout }, async (t) => {
@@ -1051,6 +1201,21 @@ test('Компактный статус показывает связанные 
   await expect(right).toBeVisible();
   await expect(documentTab(page, suffix)).toHaveAttribute('aria-selected', 'true');
   await expect(status.getByRole('button', { name: 'Связанные заметки: 0' })).toBeVisible();
+});
+
+test('Полоса прокрутки заметки доходит до правого края редактора', { timeout: tabsTimeout }, async t => {
+  // Arrange: готовим заметку, которая не помещается по высоте.
+  const source = Array.from({ length: 90 }, (_, index) => `Строка ${index + 1}`).join('\n');
+
+  // Act: открываем заметку.
+  const { page, id } = await fixture(t, source);
+  const scroller = documentArticle(page, id).locator('.cm-scroller');
+
+  // Assert: область прокрутки доходит до края панели.
+  const gap = await scroller.evaluate(element =>
+    element.closest('.vault-editor-frame__body').getBoundingClientRect().right - element.getBoundingClientRect().right
+  );
+  expect(gap).toBeCloseTo(0, 0);
 });
 
 test('Верхний отступ прокручивается вместе со страницей, а путь остаётся сверху', { timeout: tabsTimeout }, async t => {
