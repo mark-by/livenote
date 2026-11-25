@@ -13,20 +13,29 @@ tauri-build = { version = "2", features = [] }
 anyhow = "1"
 async-stream = "0.3"
 axum = "0.8"
+base64 = "0.22"
+bytes = "1"
 browser-install = { path = "crates/browser-install" }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+httpdate = "1"
 livenote-diagrams = { path = "crates/diagrams" }
 livenote-mcp = { path = "crates/mcp" }
 livenote-vault-service = { path = "crates/vault-service" }
 open = "5"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "form"] }
+rig-core = { version = "=0.31.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tempfile = "3"
+thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "sync", "time"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["rt"] }
 tower-http = { version = "0.6", features = ["fs"] }
-url = "2"
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [lints.rust]
 unsafe_code = "forbid"

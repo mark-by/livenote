@@ -15,6 +15,7 @@ pub use capture::Clip;
 
 pub struct Browser {
     cdp: Cdp,
+    cdp_usable: bool,
     _child: Child,
     _profile: TempDir,
 }
@@ -104,6 +105,7 @@ impl Browser {
         } = launch::launch(&chromium)?;
         Ok(Self {
             cdp: Cdp::new(output, input, assets),
+            cdp_usable: true,
             _child: child,
             _profile: profile,
         })
@@ -230,6 +232,9 @@ impl Browser {
     }
 
     pub(crate) async fn close(&mut self, page: Page) -> Result<(), DiagramError> {
+        if !self.cdp_usable {
+            return Err(DiagramError::Timeout);
+        }
         self.cdp
             .call::<Value>(
                 None,

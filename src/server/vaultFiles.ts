@@ -125,6 +125,10 @@ export class VaultFiles {
   }
 
   stamp(path: string): string {
+    if (!path) {
+      this.checkRoot();
+      return fileStamp(lstatSync(this.root, { bigint: true }));
+    }
     const stat = lstatSync(this.absolute(path), { bigint: true });
     if (!stat.isFile()) throw new DocumentProblem('unsafe_path', 'Ожидался обычный файл');
     return fileStamp(stat);

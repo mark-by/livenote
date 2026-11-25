@@ -121,7 +121,7 @@ try {
   log.push({ event: 'experiment-export-held' });
   const previewHeight = await page.locator('.drawio-preview').first().evaluate(element => element.getBoundingClientRect().height);
   await page.evaluate(() => {
-    const frame = document.querySelector('.vault-document:not([hidden]) .drawio-frame-host');
+    const frame = document.querySelector('iframe.drawio-frame-host');
     window.__dirtyFrame = frame;
     window.__dirtyDocument = frame.contentDocument;
     window.__dirtyXml = window.__frameBlock(frame).xml;
@@ -136,7 +136,7 @@ try {
   let saveStarted;
   const saveSeen = new Promise(resolve => { saveStarted = resolve; });
   const saveGate = new Promise(resolve => { releaseSave = resolve; });
-  await page.route('**/api/pages/*/document', async route => {
+  await page.route(/\/api\/(?:vaults\/[^/]+\/)?pages\/[^/]+\/document$/, async route => {
     if (route.request().method() === 'PUT') {
       saveStarted();
       await saveGate;
@@ -148,7 +148,7 @@ try {
   await page.keyboard.type(' Dirty transition');
   await saveSeen;
   const dirtyBlock = await page.evaluate(() => {
-    const frame = document.querySelector('.vault-document:not([hidden]) .drawio-frame-host');
+    const frame = document.querySelector('iframe.drawio-frame-host');
     const block = window.__frameBlock(frame);
     return { blockId: block.blockId, sameXml: block.xml === window.__dirtyXml,
       sameDocument: frame.contentDocument === window.__dirtyDocument };
@@ -162,7 +162,7 @@ try {
   await expect.poll(async () => (await document('00-main.md')).source).toContain('Dirty transition');
   log.push({ event: 'experiment-dirty-saved' });
   const dirtyState = await page.evaluate(() => {
-    const frame = document.querySelector('.vault-document:not([hidden]) .drawio-frame-host');
+    const frame = document.querySelector('iframe.drawio-frame-host');
     return {
       sameFrame: frame === window.__dirtyFrame,
       sameDocument: frame.contentDocument === window.__dirtyDocument,

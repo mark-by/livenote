@@ -57,6 +57,43 @@ async fn negotiates_version_without_using_the_initialize_header() {
 }
 
 #[tokio::test]
+async fn mcp_invalid_params_response_carries_32602_and_client_id() {
+    // Arrange: передаём имя инструмента как число.
+    let calls = AtomicUsize::new(0);
+    let request = json!({"jsonrpc":"2.0","id":"client-mcp-9","method":"tools/call",
+        "params":{"name":42}});
+    // Act: обрабатываем запрос через MCP-адаптер.
+    let response = handle(request, VAULTS, |call| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        unexpected(call)
+    })
+    .await;
+    // Assert: клиент получает ошибку параметров, инструмент не вызывается.
+    let body = json_body(response, 200);
+    assert_eq!(field(&body, "/error/code"), -32602);
+    assert_eq!(field(&body, "/id"), "client-mcp-9");
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn mcp_invalid_params_without_params_object_maps_to_32602() {
+    // Arrange: запрос вызова инструмента не содержит параметры.
+    let calls = AtomicUsize::new(0);
+    let request = json!({"jsonrpc":"2.0","id":7,"method":"tools/call"});
+    // Act: обрабатываем запрос через MCP-адаптер.
+    let response = handle(request, VAULTS, |call| {
+        calls.fetch_add(1, Ordering::Relaxed);
+        unexpected(call)
+    })
+    .await;
+    // Assert: клиент получает ошибку параметров с исходным id.
+    let body = json_body(response, 200);
+    assert_eq!(field(&body, "/error/code"), -32602);
+    assert_eq!(field(&body, "/id"), 7);
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn notification_does_not_dispatch_a_tool_or_reply() {
     let calls = AtomicUsize::new(0);
     let notification = json!({"jsonrpc":"2.0","method":"tools/call","params":{

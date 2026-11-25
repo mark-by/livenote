@@ -3,7 +3,7 @@ import { DocumentProblem, fileVersion, materializeVaultDocument, openable, parse
 import { decodeVaultText, type FileWrite, type VaultFiles } from './vaultFiles.js';
 import type { VaultFileRecord } from './vaultIndex.js';
 import { buildLinkGraph, linkSpans, publicLinks } from './vaultLinks.js';
-import { ignoredPath } from './vaultIgnore.js';
+import { ignoredPath, ignoreFile } from './vaultIgnore.js';
 
 type FileFailure = { readonly code: VaultProblemCode; readonly message: string };
 type Observation = VaultFileRecord | FileFailure;
@@ -46,18 +46,57 @@ function equal<T>(previous: readonly T[], next: readonly T[]): boolean {
   return previous.length === next.length && previous.every((value, index) => value === next[index]);
 }
 
+function stamp(files: VaultFiles, path: string): string {
+  try { return files.stamp(path); }
+  catch (error) { return fileFailure(error).code; }
+}
+
 /** Проекция сопоставляет подтверждённые версии файлов с документами и графом. */
 export class VaultProjection {
   private treeInputs: string[] = [];
   private paths: string[] = [];
   private entries = new Map<string, PageRecord>();
   private graph = buildLinkGraph([], [], new Map());
+  private scan?: ReturnType<VaultFiles['list']>;
+  private rootStamp = '';
+  private ignoreStamp = '';
+  private observations = new Map<string, Observation>();
   treeVersion = '';
 
   constructor(private records: ReadonlyMap<string, VaultFileRecord>) {}
 
-  reconcile(files: VaultFiles, deferred: readonly FileWrite[] | null) {
-    const scan = files.list();
+  /** Без события проверяем только запрошенный документ, его вложения и правила видимости. */
+  changes(files: VaultFiles, events: ReadonlySet<string>, id?: string): ReadonlySet<string> | undefined {
+    const scan = this.scan;
+    if (!scan || this.rootStamp !== stamp(files, '') || this.ignoreStamp !== stamp(files, ignoreFile)) return;
+    const dirty = new Set<string>();
+    const assets = id === undefined ? [] : this.entries.get(id)?.parsed.document.assets.map(asset => asset.path) ?? [];
+    const paths = id === undefined || ignoredPath(scan.rules, id, false) ? events : new Set([...events, id, ...assets]);
+    for (const path of paths) {
+      const old = this.observations.get(path);
+      const current = stamp(files, path);
+      if (!old) {
+        if (events.has(path) || current !== 'missing_asset') return;
+      } else if ('stamp' in old) {
+        if (old.stamp === current) continue;
+        if (current === 'missing_asset' || current === 'unsafe_path') return;
+        dirty.add(path);
+      } else if (old.code !== current || events.has(path)) {
+        // После ошибки нельзя считать, что прежнее перечисление содержит правильный тип пути.
+        return;
+      }
+    }
+    return dirty;
+  }
+
+  reconcile(files: VaultFiles, deferred: readonly FileWrite[] | null, dirty?: ReadonlySet<string>) {
+    const cached = dirty === undefined ? undefined : this.observations;
+    if (!cached) {
+      // Снимок метаданных до обхода не скрывает изменение, случившееся во время обхода.
+      this.rootStamp = stamp(files, '');
+      this.ignoreStamp = stamp(files, ignoreFile);
+    }
+    const scan = cached && this.scan ? this.scan : files.list();
     const problems = [...scan.problems, ...files.recoveryProblems.filter(problem => !ignoredPath(scan.rules, problem.path, false))];
     const quarantined = new Map(files.recoveryProblems.map(problem => [problem.path, problem]));
     const observed = new Map<string, Observation>();
@@ -65,17 +104,17 @@ export class VaultProjection {
     const observe = (path: string): Observation => {
       const known = observed.get(path);
       if (known) return known;
-      let result: Observation;
       const quarantine = quarantined.get(path);
+      const previous = dirty?.has(path) ? undefined : cached?.get(path);
+      let result: Observation;
       if (quarantine) result = quarantine;
-      else {
-        try {
-          const stamp = files.stamp(path);
-          const old = this.records.get(path);
-          result = old?.stamp === stamp ? old : indexFile(path, files.readBytes(path));
-          records.set(path, result);
-        } catch (error) { result = fileFailure(error); }
-      }
+      else if (previous) result = previous;
+      else try {
+        const current = files.stamp(path);
+        const old = this.records.get(path);
+        result = old?.stamp === current ? old : indexFile(path, files.readBytes(path));
+      } catch (error) { result = fileFailure(error); }
+      if ('version' in result) records.set(path, result);
       observed.set(path, result);
       return result;
     };
@@ -151,6 +190,8 @@ export class VaultProjection {
     }
     this.paths = nextPaths;
     this.entries = next;
+    this.scan = scan;
+    this.observations = observed;
     if (!deferred) this.records = records;
     const visibleRecords = new Map([...records].filter(([path]) => paths.has(path)));
     return { pages: new Map([...next].map(([path, { parsed }]) => [path, parsed])), problems, records: visibleRecords, folders: scan.folders, links: this.graph.links };

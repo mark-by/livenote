@@ -86,6 +86,7 @@ impl<'a, S: VaultReadSource> Observations<'a, S> {
         &mut self,
         scan: VaultScan<'_>,
         staged: &'a [StagedFile<'a>],
+        staged_times: impl Fn(&str) -> FileTimes,
     ) -> ScannedTree {
         let mut problems = scan.problems.to_vec();
         problems.extend(
@@ -151,7 +152,7 @@ impl<'a, S: VaultReadSource> Observations<'a, S> {
                         let bytes = FileBytes {
                             bytes: source.to_vec(),
                             stamp: String::new(),
-                            times: FileTimes::default(),
+                            times: staged_times(file.path),
                         };
                         Ok(Arc::new(FileRecord::parse(file.path, bytes)))
                     }

@@ -1,5 +1,5 @@
 import type { SVGProps } from 'react';
-import { Button, Dropdown, Label } from '@heroui/react';
+import { Button, Dropdown, Label, Tooltip } from '@heroui/react';
 import { EllipsisVertical } from '@gravity-ui/icons';
 
 export type GravityIcon = (props: SVGProps<SVGSVGElement>) => React.JSX.Element;
@@ -19,9 +19,12 @@ export function IconButton({ label, icon: Icon, onPress, disabled = false, class
   readonly disabled?: boolean;
   readonly className?: string;
 }): React.JSX.Element {
-  return <Button aria-label={label} data-tooltip={label} className={`vault-icon-button ${className}`} isDisabled={disabled} variant="ghost" onPress={onPress}>
-    <Icon aria-hidden="true" />
-  </Button>;
+  return <Tooltip delay={300}>
+    <Button aria-label={label} className={`vault-icon-button ${className}`} isDisabled={disabled} variant="ghost" onPress={onPress}>
+      <Icon aria-hidden="true" />
+    </Button>
+    <Tooltip.Content>{label}</Tooltip.Content>
+  </Tooltip>;
 }
 
 export interface VaultMenuAction {
@@ -40,9 +43,12 @@ export function VaultMenu({ label, actions, onAction, triggerIcon = EllipsisVert
 }): React.JSX.Element {
   const Trigger = triggerIcon;
   return <Dropdown>
-    <Dropdown.Trigger aria-label={label} data-tooltip={label} className={`vault-icon-button ${className}`}>
-      <Trigger aria-hidden="true" />
-    </Dropdown.Trigger>
+    <Tooltip delay={300}>
+      <Dropdown.Trigger aria-label={label} className={`vault-icon-button ${className}`}>
+        <Trigger aria-hidden="true" />
+      </Dropdown.Trigger>
+      <Tooltip.Content>{label}</Tooltip.Content>
+    </Tooltip>
     <Dropdown.Popover placement="bottom end">
       <Dropdown.Menu aria-label={label} onAction={(key) => onAction(key.toString())}>
         {actions.map((action) => {

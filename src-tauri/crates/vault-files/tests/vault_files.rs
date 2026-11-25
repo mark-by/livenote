@@ -183,6 +183,42 @@ fn replays_node_journal_and_isolates_unrelated_conflict() -> Result {
 }
 
 #[test]
+fn replays_interrupted_legacy_agent_undo_transaction() -> Result {
+    // Arrange: прежнее Undo восстановило заметку, но ещё не удалило вложение и каталог.
+    let root = tempdir()?;
+    let id = "3d3c2bf4-29d0-4acc-9d70-7ead555fd88e";
+    let active = root.path().join(".livenote/transactions").join(id);
+    fs::create_dir_all(&active)?;
+    fs::create_dir(root.path().join("Diagrams"))?;
+    fs::write(root.path().join("Note.md"), b"old")?;
+    fs::write(root.path().join("Diagrams/Map.drawio"), b"new")?;
+    let historical = root.path().join(".livenote/undo-history");
+    fs::write(&historical, b"leave unchanged")?;
+    let new_hash = "11507a0e2f5e69d5dfa40a62a1bd7b6ee57e6bcd85c67c9b8431b36fff21c437";
+    let old_hash = "cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4";
+    let legacy = serde_json::json!({
+        "id": id,
+        "changes": [
+            {"path": "Note.md", "old": "bmV3", "next": "b2xk", "oldHash": new_hash, "newHash": old_hash},
+            {"path": "Diagrams/Map.drawio", "old": "bmV3", "next": null, "oldHash": new_hash, "newHash": null}
+        ],
+        "directories": [{"path": "Diagrams", "old": true, "next": false}]
+    });
+    fs::write(active.join("journal.json"), serde_json::to_vec(&legacy)?)?;
+
+    // Act: открываем хранилище после прерванной транзакции.
+    let vault = VaultFiles::open(root.path())?;
+
+    // Assert: журнал завершает только записанную операцию и не трогает сторонний файл.
+    assert_eq!(vault.read("Note.md")?.bytes, b"old");
+    assert!(!root.path().join("Diagrams").exists());
+    assert!(!active.exists());
+    assert!(vault.recovery_problems().is_empty());
+    assert_eq!(fs::read(historical)?, b"leave unchanged");
+    Ok(())
+}
+
+#[test]
 fn renames_directory_case_and_preserves_binary_contents_and_empty_folder() -> Result {
     // Arrange: дерево содержит двоичный файл и пустой каталог.
     let root = tempdir()?;

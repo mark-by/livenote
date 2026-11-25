@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod r4_tests;
 mod rollback;
 #[cfg(test)]
 mod tests;
@@ -5,7 +7,7 @@ mod tests;
 use rustix::fs::{AtFlags, FileType, RenameFlags};
 use uuid::Uuid;
 
-use crate::disk::{Disk, file_type};
+use crate::disk::{Disk, file_type, same_inode};
 use crate::journal::{Change, Journal};
 use crate::plan::exact_exists;
 use crate::{RelativePath, VaultFileError as Error};
@@ -123,14 +125,17 @@ impl<'a> Publication<'a> {
                     .disk
                     .stat(&location)?
                     .ok_or_else(|| Error::stale(location.as_str()))?;
-                // При ошибке fsync переименование уже могло произойти.
-                self.undo.push(Undo::Rename(rename, stat));
-                self.disk
+                let applied = self
+                    .disk
                     .rename(&rename.from, &staged, RenameFlags::NOREPLACE)?;
+                // Одно действие отката покрывает оба этапа переименования.
+                self.undo.push(Undo::Rename(rename, stat));
+                applied.sync()?;
             }
             self.disk.make_parents(&rename.to)?;
             self.disk
-                .rename(&staged, &rename.to, RenameFlags::NOREPLACE)?;
+                .rename(&staged, &rename.to, RenameFlags::NOREPLACE)?
+                .sync()?;
         }
         for entry in create {
             let after_rename = self
@@ -154,7 +159,10 @@ impl<'a> Publication<'a> {
         remove.sort_by_key(|entry| std::cmp::Reverse(entry.path.as_str().len()));
         for entry in remove {
             match self.disk.unlink(&entry.path, AtFlags::REMOVEDIR) {
-                Ok(()) => self.undo.push(Undo::Removed(&entry.path)),
+                Ok(applied) => {
+                    self.undo.push(Undo::Removed(&entry.path));
+                    applied.sync()?;
+                }
                 Err(error) if mode == Mode::Recover && error.missing() => {}
                 Err(error) => return Err(error),
             }
@@ -206,38 +214,56 @@ impl<'a> Publication<'a> {
             }
         }
         self.disk.make_parents(path)?;
-        self.disk.mkdir(path)?;
+        let applied = self.disk.mkdir(path)?;
         let stat = self
             .disk
             .stat(path)?
             .ok_or_else(|| Error::stale(path.as_str()))?;
         self.undo.push(Undo::Created(path, stat));
-        Ok(())
+        applied.sync()
     }
 
     fn publish_file(&mut self, index: usize, change: &'a Change, mode: Mode) -> Result<(), Error> {
         let path = &change.path;
         let actual = self.disk.read_optional(path)?.map(|file| file.bytes);
         if mode == Mode::Recover && actual == change.next {
+            if self.journal.preserve_staged && change.next.is_some() {
+                let source = self.journal.entry(&format!("new-{index}"))?;
+                let source_stat = self.disk.stat(&source)?;
+                let target_stat = self.disk.stat(path)?;
+                if !source_stat
+                    .zip(target_stat)
+                    .is_some_and(|(source, target)| same_inode(&source, &target))
+                {
+                    return Err(Error::stale(path.as_str()));
+                }
+                self.disk.sync_parent(path)?;
+            }
             return Ok(());
         }
         if actual != change.old {
             return Err(Error::stale(path.as_str()));
         }
-        if let Some(bytes) = &change.next {
-            let staged = match mode {
-                Mode::Commit => {
-                    let staged = self.journal.entry(&format!("new-{index}"))?;
-                    if self.disk.read(&staged)?.bytes != *bytes {
-                        return Err(Error::stale(staged.as_str()));
-                    }
-                    staged
+        let applied = if let Some(bytes) = &change.next {
+            let staged = if mode == Mode::Recover && !self.journal.preserve_staged {
+                let staged = self
+                    .journal
+                    .entry(&format!("recover-{index}-{}", Uuid::new_v4()))?;
+                self.disk.write_exclusive(&staged, bytes)?;
+                staged
+            } else {
+                let staged = self.journal.entry(&format!("new-{index}"))?;
+                if self.disk.read(&staged)?.bytes != *bytes {
+                    return Err(Error::stale(staged.as_str()));
                 }
-                Mode::Recover => {
-                    let staged = self
+                if self.journal.preserve_staged {
+                    // Журнал хранит исходный inode до подтверждения, в том числе при откате.
+                    let link = self
                         .journal
                         .entry(&format!("recover-{index}-{}", Uuid::new_v4()))?;
-                    self.disk.write_exclusive(&staged, bytes)?;
+                    self.disk.link(&staged, &link)?;
+                    link
+                } else {
                     staged
                 }
             };
@@ -253,11 +279,11 @@ impl<'a> Publication<'a> {
                 } else {
                     RenameFlags::empty()
                 },
-            )?;
+            )?
         } else {
-            self.disk.unlink(path, AtFlags::empty())?;
-        }
+            self.disk.unlink(path, AtFlags::empty())?
+        };
         self.undo.push(Undo::File(change));
-        Ok(())
+        applied.sync()
     }
 }

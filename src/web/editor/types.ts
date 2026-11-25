@@ -24,8 +24,9 @@ export type EditorVimMode = 'normal' | 'insert' | 'visual';
 export type LivePreviewEditorHandle = {
   readonly focus: () => void;
   readonly revealPosition: (position: number) => void;
+  readonly revealLine: (line: number) => void;
   readonly getSelection: () => SourceRange;
-  readonly replaceRange: (range: SourceRange, text: string) => void;
+  readonly replaceRange: (range: SourceRange, text: string, options?: { readonly focus?: boolean }) => void;
 };
 
 export type LivePreviewEditorProps = {

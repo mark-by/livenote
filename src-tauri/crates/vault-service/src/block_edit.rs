@@ -3,8 +3,8 @@ use crate::{
     args::{Asset, Layout, WriteBlock, WriteDocument},
     assets::Check,
     diagram::format,
-    edit::{byte_range, escape_label, fence, safe_title},
-    links::{UrlStyle, relative_url},
+    diagram_attachment::{Attachment, AttachmentFormat},
+    edit::{block_title, byte_range, escape_label, fence},
     state::State,
     transaction::Plan,
 };
@@ -27,10 +27,7 @@ impl State {
             .as_ref()
             .and_then(|id| parsed.spans().iter().position(|span| &span.id == id));
         let old = existing.and_then(|i| document.page.blocks.get(i));
-        let title = body
-            .title
-            .as_ref()
-            .map(|title| title.trim().chars().take(200).collect::<String>());
+        let title = body.title.as_deref().map(block_title);
         let same = old.is_some_and(|old| {
             old.kind == kind
                 && old.source == body.source
@@ -169,42 +166,32 @@ impl State {
                 |title| change_label(existing, title),
             )
         } else {
-            match kind {
-                BlockType::Markdown => input.source,
-                BlockType::Mermaid => fence(
-                    &input.source,
-                    input
+            let format = match kind {
+                BlockType::Markdown => return Ok((input.source, assets)),
+                BlockType::Mermaid => {
+                    let title = input
                         .title
-                        .or_else(|| old.and_then(|old| old.title.as_deref())),
-                    nl,
-                ),
-                BlockType::Bpmn | BlockType::Drawio => {
-                    let parent = path.rsplit_once('/').map_or_else(
-                        || "Схемы".to_owned(),
-                        |(parent, _)| format!("{parent}/Схемы"),
-                    );
-                    let ext = if kind == BlockType::Bpmn {
-                        "bpmn"
-                    } else {
-                        "drawio"
-                    };
-                    let label = input.title.filter(|label| !label.is_empty());
-                    let base = safe_title(&format!(
-                        "{} — {}",
-                        parsed.document().page.title,
-                        label.unwrap_or(ext)
-                    ));
-                    let asset = self.unique(&format!("{parent}/{base}"), ext)?;
-                    let url = relative_url(path, &asset, UrlStyle::default());
-                    assets.push(Asset {
-                        path: asset,
-                        source: input.source,
-                        expected_version: None,
-                        layout: Layout::Preserve,
-                    });
-                    format!("![{}]({url}){nl}", escape_label(label.unwrap_or_default()))
+                        .or_else(|| old.and_then(|old| old.title.as_deref()));
+                    return Ok((fence(&input.source, title, nl), assets));
                 }
-            }
+                BlockType::Bpmn => AttachmentFormat::Bpmn,
+                BlockType::Drawio => AttachmentFormat::Drawio,
+            };
+            let attachment = Attachment {
+                page_path: path,
+                page_title: &parsed.document().page.title,
+                title: input.title,
+                format,
+            };
+            let asset = attachment.choose_path(self, |_| false)?;
+            let replacement = attachment.embed(&asset, nl);
+            assets.push(Asset {
+                path: asset,
+                source: input.source,
+                expected_version: None,
+                layout: Layout::Preserve,
+            });
+            replacement
         };
         Ok((replacement, assets))
     }

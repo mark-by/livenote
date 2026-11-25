@@ -165,9 +165,20 @@ pub fn fence(source: &str, title: Option<&str>, nl: &str) -> String {
     );
     let heading = title
         .filter(|title| !title.is_empty())
-        .map_or_else(String::new, |title| format!("## {title}{nl}"));
+        .map_or_else(String::new, |title| {
+            format!("## {}{nl}", escape_label(title))
+        });
     let separator = if normalized.ends_with(nl) { "" } else { nl };
     format!("{heading}{ticks}mermaid{nl}{normalized}{separator}{ticks}{nl}")
+}
+
+pub(crate) fn block_title(title: &str) -> String {
+    title
+        .trim()
+        .chars()
+        .take(200)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
 }
 
 pub fn escape_label(label: &str) -> String {

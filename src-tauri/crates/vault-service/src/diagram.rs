@@ -178,19 +178,6 @@ pub fn invalid(block: &str, validation: Option<&DiagramValidation>) -> ApiError 
         .details(Value::Object(data))
 }
 
-pub fn result(
-    page: &str,
-    block: &str,
-    revision: u64,
-    validation: Option<&DiagramValidation>,
-) -> Value {
-    let mut output = result_fields(page, block, revision);
-    if let Some(validation) = validation {
-        output.insert("validation".into(), json!(validation));
-    }
-    Value::Object(output)
-}
-
 fn result_fields(page: &str, block: &str, revision: u64) -> Map<String, Value> {
     Map::from_iter([
         ("pageId".into(), json!(page)),

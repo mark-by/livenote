@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Disclosure, Dropdown, Input, Label, SearchField } from '@heroui/react';
-import { ArrowRightToSquare, Copy, File, FilePlus, Folder, FolderPlus, Pencil, Plus, TrashBin } from '@gravity-ui/icons';
+import { ArrowRightToSquare, Copy, File, FilePlus, Folder, FolderPlus, Link, Pencil, Plus, TrashBin } from '@gravity-ui/icons';
 import type { VaultSearchHit } from '../../shared/types';
 import type { VaultWorkspace } from './useVaultWorkspace';
 import type { VaultFileEntry } from './vaultPaths';
@@ -166,7 +166,10 @@ export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, o
 
   return <div className="vault-sidebar__content">
     <div className="vault-sidebar__heading">
-      <div className="vault-root-drop" {...dropProps('')}>
+      <div className="vault-root-drop" {...dropProps('')} onContextMenu={(event) => {
+        event.preventDefault();
+        setMenu({ kind: 'folder', path: '', x: event.clientX, y: event.clientY });
+      }}>
         <Button className="vault-root-select" data-selected={selectedFolder === '' ? 'true' : undefined}
           variant="ghost" onPress={() => workspace.setSelectedFolder('')}><span title={vaultName}>{vaultName}</span></Button>
       </div>
@@ -198,6 +201,7 @@ export function VaultSidebar({ workspace, expandedFolders, setFoldersExpanded, o
         <Dropdown.Item id="rename" textValue="Переименовать"><Pencil aria-hidden="true" /><Label>Переименовать</Label></Dropdown.Item>
         <Dropdown.Item id="move" textValue="Переместить"><ArrowRightToSquare aria-hidden="true" /><Label>Переместить</Label></Dropdown.Item>
         {menu?.kind === 'file' && <Dropdown.Item id="copy-path" textValue="Скопировать путь"><Copy aria-hidden="true" /><Label>Скопировать путь</Label></Dropdown.Item>}
+        {menu?.kind === 'folder' && <Dropdown.Item id="binding" textValue="Привязка"><Link aria-hidden="true" /><Label>Привязка</Label></Dropdown.Item>}
         <Dropdown.Item id="delete" textValue="Удалить" variant="danger"><TrashBin aria-hidden="true" /><Label>Удалить</Label></Dropdown.Item>
       </Dropdown.Menu></Dropdown.Popover>
     </Dropdown>

@@ -23,6 +23,69 @@ test('block insertion moves to the line boundary instead of splitting prose', ()
   assert.equal(`${source.slice(0, inserted.edit.from)}${inserted.edit.text}${source.slice(inserted.edit.to)}`, inserted.source);
 });
 
+test('Вставка в конце последней строки сохраняет её перед новым блоком', () => {
+  // Arrange: заметка заканчивается непустой строкой без перевода строки.
+  const source = 'Последняя строка';
+  const block = '![[schema.drawio]]';
+
+  // Act: вставить схему на правой границе строки.
+  const inserted = insertBlockAt(source, source.length, block);
+
+  // Assert: схема следует за существующим текстом.
+  assert.equal(inserted.source, `${source}\n\n${block}\n`);
+});
+
+test('Вставка внутри строки из пробелов сохраняет выбранную позицию', () => {
+  // Arrange: указатель стоит между двумя пробелами на пустой строке.
+  const source = 'До\n  \nПосле';
+  const position = source.indexOf('  ') + 1;
+  const block = '![[schema.drawio]]';
+
+  // Act: вставить схему в выбранную позицию.
+  const inserted = insertBlockAt(source, position, block);
+
+  // Assert: один пробел остаётся перед схемой, другой — после неё.
+  assert.equal(inserted.source, 'До\n \n\n![[schema.drawio]]\n\n \nПосле');
+});
+
+test('Вставка на первой пустой строке сохраняет схему в начале заметки', () => {
+  // Arrange: заметка начинается с пустой строки.
+  const source = '\nТекст';
+  const block = '![[schema.drawio]]';
+
+  // Act: вставить схему перед первым переводом строки.
+  const inserted = insertBlockAt(source, 0, block);
+
+  // Assert: до схемы нет пустой строки, текст начинается новым абзацем.
+  assert.equal(inserted.source, `${block}\n\nТекст`);
+});
+
+test('Вставка между абзацами использует существующие переводы строк', () => {
+  // Arrange: между абзацами есть две пустые строки.
+  const source = 'До\n\n\nПосле';
+  const position = source.indexOf('\n\n\n') + 2;
+  const block = '![[schema.drawio]]';
+
+  // Act: вставить схему в конце второй пустой строки.
+  const inserted = insertBlockAt(source, position, block);
+
+  // Assert: между схемой и каждым абзацем ровно одна пустая строка.
+  assert.equal(inserted.source, `До\n\n${block}\n\nПосле`);
+});
+
+test('Вставка внутри непустой строки сохраняет пустые строки перед ней', () => {
+  // Arrange: перед строкой с указателем есть две пустые строки.
+  const source = 'До\n\n\nПосле\nДальше';
+  const position = source.indexOf('\nДальше') - 1;
+  const block = '![[schema.drawio]]';
+
+  // Act: вставить схему у последней буквы непустой строки.
+  const inserted = insertBlockAt(source, position, block);
+
+  // Assert: схема предшествует строке, пустые строки остаются на месте.
+  assert.equal(inserted.source, `До\n\n\n${block}\n\nПосле\nДальше`);
+});
+
 test('Mermaid fences outgrow backticks in source and preserve source bytes', () => {
   const fence = mermaidFence('flowchart LR\n  A["```"] --> B\n');
   assert.match(fence, /^````mermaid\n/);

@@ -2,12 +2,22 @@ use crate::{
     ApiError,
     args::{Layout, WriteDocument},
     diagram::{format, invalid},
+    source::Source,
     state::State,
     transaction::{Change, Plan},
 };
 use livenote_diagrams::DiagramFormat as EngineFormat;
 use std::collections::BTreeSet;
-use vault_read::{ParsedDocument, VaultDocument};
+use vault_read::{ParsedDocument, VaultDocument, parse_document, resolve_links};
+
+fn references_asset(doc: &VaultDocument, path: &str) -> bool {
+    doc.assets.iter().any(|asset| asset.path == path)
+        || doc
+            .links
+            .iter()
+            .any(|link| link.target_page_id.as_deref() == Some(path))
+}
+
 pub struct Check {
     pub(crate) format: EngineFormat,
     pub(crate) source: String,
@@ -112,7 +122,8 @@ impl State {
         previous: &VaultDocument,
         next: Option<&VaultDocument>,
     ) -> Result<(), ApiError> {
-        if !self.listing.ignored_folders.is_empty()
+        if previous.assets.is_empty()
+            || !self.listing.ignored_folders.is_empty()
             || !self.listing.problems.is_empty()
             || self.listing.files.iter().any(|path| {
                 vault_read::openable(path)
@@ -122,17 +133,36 @@ impl State {
         {
             return Ok(());
         }
+        let other_documents = || {
+            self.projection
+                .documents()
+                .map(ParsedDocument::document)
+                .filter(|doc| doc.path != previous.path)
+        };
+        // При прямом разборе редакции поле links ещё пусто: его заполняет проекция.
+        let next_targets = if let Some(doc) = next.filter(|doc| doc.links.is_empty()) {
+            let parsed = parse_document(&doc.path, &doc.source, |path| {
+                Source(&self.files).asset(path)
+            })?;
+            if parsed.links().is_empty() {
+                BTreeSet::new()
+            } else {
+                let pages = other_documents()
+                    .chain(std::iter::once(doc))
+                    .collect::<Vec<_>>();
+                resolve_links(&parsed, &pages, &self.listing.files)
+                    .into_iter()
+                    .filter_map(|span| span.link.target_page_id)
+                    .collect()
+            }
+        } else {
+            BTreeSet::new()
+        };
         for asset in &previous.assets {
-            if next.is_some_and(|doc| doc.assets.iter().any(|other| other.path == asset.path))
-                || !self.listing.files.contains(&asset.path)
-                || self
-                    .projection
-                    .documents()
-                    .map(ParsedDocument::document)
-                    .any(|doc| {
-                        doc.path != previous.path
-                            && doc.assets.iter().any(|other| other.path == asset.path)
-                    })
+            if !self.listing.files.contains(&asset.path)
+                || next.is_some_and(|doc| references_asset(doc, &asset.path))
+                || next_targets.contains(&asset.path)
+                || other_documents().any(|doc| references_asset(doc, &asset.path))
             {
                 continue;
             }

@@ -25,17 +25,20 @@ export function linkSpans(source: string, bodyStart = 0): LinkSpan[] {
   const walk = (node: typeof root | (typeof root.children)[number]): void => {
     const start = node.position?.start.offset; const end = node.position?.end.offset;
     if (['code', 'inlineCode', 'html'].includes(node.type) && start !== undefined && end !== undefined) { excluded.push([start, end]); return; }
-    if (node.type === 'definition') definitions.set(node.identifier, node);
+    if (node.type === 'definition' && !definitions.has(node.identifier)) definitions.set(node.identifier, node);
     if (node.type === 'link' || node.type === 'image') add(node);
     if (node.type === 'linkReference' || node.type === 'imageReference') references.add(node.identifier);
     if ('children' in node) for (const child of node.children) walk(child);
   };
   walk(root);
   for (const id of references) { const definition = definitions.get(id); if (definition) add(definition); }
+  let passed = 0; // ссылки идут слева направо, поэтому курсор по диапазонам монотонный
   for (const match of text.matchAll(/\[\[([^\]\r\n]+)\]\]/g)) {
     const at = match.index;
     let slashes = 0; for (let i = at - (text[at - 1] === '!' ? 2 : 1); text[i] === '\\'; i--) slashes++;
-    if (slashes % 2 || excluded.some(([a, b]) => at >= a && at < b)) continue;
+    while (passed < excluded.length && excluded[passed]![1] <= at) passed++;
+    const range = excluded[passed];
+    if (slashes % 2 || (range !== undefined && at >= range[0] && at < range[1])) continue;
     const inner = match[1] ?? ''; const pipe = inner.indexOf('|'); const target = pipe < 0 ? inner : inner.slice(0, pipe);
     links.push({ ...targetParts(target), targetPageId: null, label: pipe < 0 ? null : inner.slice(pipe + 1), kind: 'wiki',
       start: offset + at + 2, end: offset + at + 2 + target.length, fullStart: offset + at, fullEnd: offset + at + match[0].length });

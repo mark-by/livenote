@@ -17,13 +17,14 @@ export function DiagramDialog(props: DiagramDialogProps): React.JSX.Element {
   return <DiagramDialogSession key={props.session.key} {...props} />;
 }
 
-function DiagramDialogSession({ session, onSave, onCancel, persisted }: DiagramDialogProps): React.JSX.Element {
+function DiagramDialogSession({ session, onSave, onCancel, persisted, ...agent }: DiagramDialogProps): React.JSX.Element {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const value = session.mode === 'create' && session.value.source.trim() === ''
     ? { ...session.value, source: STARTERS[session.value.format] }
     : session.value;
   const block = { ...snapshotBlock(value, `dialog-${id}`, persisted), title: null };
   const common = {
+    ...agent,
     block, pageTitle: value.title ?? 'Схема', pageRevision: persisted?.revision ?? 0,
     persisted: persisted !== undefined, initialEditing: session.mode !== 'view',
     onClose: onCancel,
@@ -32,7 +33,7 @@ function DiagramDialogSession({ session, onSave, onCancel, persisted }: DiagramD
   switch (session.value.format) {
     case 'mermaid': return createPortal(<DiagramFullscreen {...common} />, document.body);
     case 'drawio': return createPortal(<DrawioFullscreen {...common} />, document.body);
-    case 'bpmn': return <BpmnDiagramDialog session={session} onSave={onSave} onCancel={onCancel} persisted={persisted} />;
+    case 'bpmn': return <BpmnDiagramDialog {...agent} session={session} onSave={onSave} onCancel={onCancel} persisted={persisted} />;
     default: return assertNever(session.value.format);
   }
 }

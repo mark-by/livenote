@@ -35,7 +35,8 @@ fn failed_publication_restores_rename_and_original_bytes() -> Result<(), Box<dyn
     // Сбой второй записи произойдёт после публикации первой.
     vault
         .disk
-        .unlink(&journal.entry("new-1")?, AtFlags::empty())?;
+        .unlink(&journal.entry("new-1")?, AtFlags::empty())?
+        .sync()?;
     let mut publication = Publication::new(&vault.disk, &journal);
 
     // Act: выполняем публикацию и откатываем применённые действия при сбое.

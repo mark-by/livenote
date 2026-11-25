@@ -4,7 +4,6 @@
   --vault-reading-width: 72ch;
   --vault-reading-wide: 88ch;
   --vault-font-reading: var(--font-ui);
-  --tooltip-delay: 500ms;
 }
 
 .vault-app {
@@ -41,25 +40,6 @@
   color: var(--muted);
   position: relative;
 }
-.vault-icon-button::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  inset-block-start: calc(100% + var(--space-1));
-  inset-inline-end: 0;
-  z-index: 100;
-  width: max-content;
-  max-width: calc(var(--spacing) * 56);
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-md);
-  background: var(--overlay);
-  color: var(--overlay-foreground);
-  box-shadow: var(--shadow-overlay);
-  font-size: var(--text-xs);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-.vault-icon-button:hover::after, .vault-icon-button:focus-visible::after { opacity: 1; }
 .vault-icon-button svg { display: block; width: var(--space-4); height: var(--space-4); margin: 0; }
 .vault-icon-button[data-hovered], .vault-icon-button[data-pressed] { color: var(--foreground); background: var(--default); }
 
@@ -315,4 +295,5 @@
 
 @media (prefers-reduced-motion: reduce) {
   .vault-app *, .vault-app *::before, .vault-app *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  .vault-app .spinner [data-slot='spinner-icon'] { display: none; }
 }

@@ -1,6 +1,6 @@
 use crate::{
     ApiError, Output, args,
-    block::Mode,
+    block::{BlockSummary, Mode},
     registry::Entry,
     service::{Service, access, decode, require_version},
     transaction::ReceiptKey,
@@ -81,15 +81,16 @@ impl Service {
         .await
     }
 
-    pub(crate) async fn block_action(
+    pub(crate) async fn block_action<T: Send + 'static>(
         &self,
         entry: Arc<Entry>,
         operation: &str,
         args: Value,
-    ) -> Result<Output, ApiError> {
+        response: fn(&crate::state::State, BlockSummary) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
         use crate::block::BlockWrite;
-        enum Prepared {
-            Replay(Value),
+        enum Prepared<T> {
+            Replay(T),
             Write(Box<BlockWrite>, Option<ReceiptKey>),
         }
         let mode = match operation {
@@ -128,7 +129,7 @@ impl Service {
                 .map(|id| ReceiptKey::new(id, &operation, args))
                 .transpose()?;
             if let Some(replay) = state.replay(receipt.as_ref())? {
-                return Ok(Prepared::Replay(replay));
+                return response(state, serde_json::from_value(replay)?).map(Prepared::Replay);
             }
             state
                 .prepare_block(body, mode)
@@ -136,22 +137,20 @@ impl Service {
         })
         .await?;
         let (write, receipt) = match prepared {
-            Prepared::Replay(replay) => return Ok(Output::Json(replay)),
+            Prepared::Replay(replay) => return Ok(replay),
             Prepared::Write(write, receipt) => (write, receipt),
         };
-        self.publish_block(entry, *write, receipt).await
+        self.publish_block(entry, *write, receipt, response).await
     }
 
-    async fn publish_block(
+    async fn publish_block<T: Send + 'static>(
         &self,
         entry: Arc<Entry>,
         mut write: crate::block::BlockWrite,
         receipt: Option<ReceiptKey>,
-    ) -> Result<Output, ApiError> {
-        use crate::{
-            block::Publication,
-            diagram::{invalid, result},
-        };
+        response: fn(&crate::state::State, BlockSummary) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
+        use crate::{block::Publication, diagram::invalid};
         use livenote_diagrams::ValidationStatus;
         let validation = write.validate(&self.validator).await?;
         let path = write.body.page_id.clone();
@@ -163,12 +162,13 @@ impl Service {
         {
             return access(entry, move |state| {
                 let revision = state.check(&path, &expected)?.document().page.revision;
-                Ok(Output::Json(result(
-                    &path,
-                    prior_id.as_deref().unwrap_or_default(),
+                let summary = BlockSummary {
+                    page_id: path,
+                    block_id: prior_id.unwrap_or_default(),
                     revision,
-                    validation.as_ref(),
-                )))
+                    validation,
+                };
+                response(state, summary)
             })
             .await;
         }
@@ -195,7 +195,8 @@ impl Service {
             receipt,
         };
         access(entry, move |state| {
-            state.finish_block(publication).map(Output::Json)
+            let summary = state.finish_block(publication)?;
+            response(state, summary)
         })
         .await
     }

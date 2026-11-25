@@ -10,7 +10,9 @@ import type { Root } from 'react-dom/client';
 import { EditableTable } from './EditableTable';
 import { readTable } from './tableSource';
 import type { TableSource } from './tableSource';
-import { markdownDocument } from './markdownNodes';
+import { tablePageSize } from './tablePreviewSource';
+import type { TablePreviewSource } from './tablePreviewSource';
+import { markdownDocument, reuseMarkdownDocument } from './markdownNodes';
 
 export const tableLinkHandler = Facet.define<(target: string) => void, ((target: string) => void) | undefined>({
   combine: values => values[0]
@@ -18,6 +20,8 @@ export const tableLinkHandler = Facet.define<(target: string) => void, ((target:
 
 const focusChanged = StateEffect.define<boolean>();
 const detachedTableLimit = 16;
+const detachedCellBudget = 1024;
+const detachedSourceLimit = 32 * 1024;
 
 interface MountedTable {
   widget: TableWidget;
@@ -28,7 +32,7 @@ interface MountedTable {
 }
 
 const mountedTables = new WeakMap<HTMLElement, MountedTable>();
-const tableCache = ViewPlugin.define(() => new TableCache());
+const tableCache = ViewPlugin.define(view => new TableCache(view));
 
 function unmount(table: MountedTable) {
   mountedTables.delete(table.element);
@@ -38,6 +42,29 @@ function unmount(table: MountedTable) {
 class TableCache {
   private readonly detached = new Map<number, MountedTable>();
   private closed = false;
+
+  constructor(private readonly view: EditorView) {}
+
+  private stillPresent(widget: TableWidget): boolean {
+    let present = false;
+    this.view.state.field(tableField).decorations.between(widget.from, widget.from, (from, to, value) => {
+      const current = value.spec.widget;
+      if (from === widget.from && to === widget.to && current instanceof TableWidget && current.eq(widget)) {
+        present = true;
+        return false;
+      }
+    });
+    return present;
+  }
+
+  update() {
+    for (const [position, table] of this.detached) {
+      if (!this.stillPresent(table.widget)) {
+        this.detached.delete(position);
+        unmount(table);
+      }
+    }
+  }
 
   take(widget: TableWidget) {
     const table = this.detached.get(widget.from);
@@ -49,20 +76,23 @@ class TableCache {
   }
 
   keep(table: MountedTable) {
-    if (this.closed) {
+    const { widget } = table;
+    if (this.closed || !widget.canCache || !this.stillPresent(widget)) {
       unmount(table);
       return;
     }
-    const position = table.widget.from;
+    const position = widget.from;
     const previous = this.detached.get(position);
     if (previous) unmount(previous);
     this.detached.delete(position);
     this.detached.set(position, table);
-    if (this.detached.size <= detachedTableLimit) return;
-    const oldest = this.detached.values().next().value;
-    if (oldest) {
-      this.detached.delete(oldest.widget.from);
-      unmount(oldest);
+    let cells = 0;
+    for (const cached of this.detached.values()) cells += cached.widget.cellCount;
+    for (const [key, cached] of this.detached) {
+      if (this.detached.size <= detachedTableLimit && cells <= detachedCellBudget) break;
+      this.detached.delete(key);
+      cells -= cached.widget.cellCount;
+      unmount(cached);
     }
   }
 
@@ -75,7 +105,7 @@ class TableCache {
 
 class TableWidget extends WidgetType {
   constructor(
-    readonly source: string,
+    readonly source: TablePreviewSource,
     readonly from: number,
     readonly to: number,
     readonly raw: string,
@@ -83,8 +113,15 @@ class TableWidget extends WidgetType {
     readonly readOnly: boolean
   ) { super(); }
 
+  get cellCount() { return (this.source.rows.length + 1) * this.source.width; }
+
+  get canCache() {
+    return this.source.rows.length <= tablePageSize(this.source.width) &&
+      this.cellCount <= detachedCellBudget && this.raw.length + this.source.definitions.length <= detachedSourceLimit;
+  }
+
   override eq(other: TableWidget) {
-    return this.source === other.source && this.from === other.from && this.to === other.to &&
+    return this.source.definitions === other.source.definitions && this.from === other.from && this.to === other.to &&
       this.raw === other.raw && this.readOnly === other.readOnly &&
       this.data?.rows[0]?.prefix === other.data?.rows[0]?.prefix;
   }
@@ -153,18 +190,23 @@ function decorations(state: EditorState, focused: boolean): DecorationSet {
       const active = focused && !state.readOnly && state.selection.ranges.some(selection =>
         selection.from <= node.to && selection.to >= node.from);
       if (!active) {
-        const lines: string[] = [];
+        let header = '';
+        let delimiter = '';
+        const rows: string[] = [];
         for (let child = node.node.firstChild; child; child = child.nextSibling) {
-          if (child.name !== 'TableHeader' && child.name !== 'TableRow' && child.name !== 'TableDelimiter') continue;
-          lines.push(state.doc.sliceString(child.from, child.to));
+          if (child.name === 'TableHeader') header = state.doc.sliceString(child.from, child.to);
+          else if (child.name === 'TableDelimiter') delimiter = state.doc.sliceString(child.from, child.to);
+          else if (child.name === 'TableRow') rows.push(state.doc.sliceString(child.from, child.to));
         }
-        const source = lines.join('\n');
+        if (!header || !delimiter) return false;
+        const data = readTable(state.doc, node.node);
+        const width = data?.width ?? Math.max(1, delimiter.match(/-+/g)?.length ?? 0);
         const definitions = markdownDocument(state.doc).definitionSource;
-        const markdown = definitions ? `${source}\n\n${definitions}` : source;
+        const source = { header, delimiter, rows, width, definitions };
+        const raw = state.doc.sliceString(node.from, node.to);
         marks.push(Decoration.replace({
           block: true,
-          widget: new TableWidget(markdown, node.from, node.to, state.doc.sliceString(node.from, node.to),
-            readTable(state.doc, node.node), state.readOnly)
+          widget: new TableWidget(source, node.from, node.to, raw, data, state.readOnly)
         }).range(node.from, node.to));
       }
       return false;
@@ -183,6 +225,7 @@ const tableField = StateField.define<{ readonly focused: boolean; readonly decor
     if (transaction.docChanged || transaction.selection || focused !== value.focused ||
       syntaxTree(transaction.startState) !== syntaxTree(transaction.state) ||
       transaction.startState.readOnly !== transaction.state.readOnly) {
+      reuseMarkdownDocument(transaction);
       return { focused, decorations: decorations(transaction.state, focused) };
     }
     return value;

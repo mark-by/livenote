@@ -69,6 +69,7 @@ function canonicalDirectory(path: string): string {
 export class VaultIndex {
   private readonly path: string;
   private persisted = new Map<string, VaultFileRecord>();
+  private latest = this.persisted;
   private stamp: string | null = null;
 
   constructor(path: string, private readonly root: string) { this.path = resolve(path); }
@@ -106,12 +107,14 @@ export class VaultIndex {
   }
 
   save(records: Map<string, VaultFileRecord>): void {
+    this.latest = records;
     try {
       const path = this.location();
       const stamp = cacheStamp(path);
       if (stamp === null || stamp !== this.stamp) {
         this.replace(path, stamp, records);
       } else {
+        if (records === this.persisted) return;
         const changed = [...records].filter(([file, record]) => this.persisted.get(file) !== record);
         const removed = [...this.persisted.keys()].filter(file => !records.has(file));
         if (!changed.length && !removed.length) return;
@@ -126,6 +129,8 @@ export class VaultIndex {
       this.stamp = null;
     }
   }
+
+  repair(): void { this.save(this.latest); }
 
   private replace(path: string, stamp: string | null, records: Map<string, VaultFileRecord>): void {
     const directory = dirname(path);

@@ -104,6 +104,54 @@ test('Таблица сохраняет правки ячейки и струк�
   await expect(grid.getByRole('row')).toHaveCount(3);
 });
 
+test('Большая таблица показывает одну страницу и сохраняет правку в нужной строке', { timeout: tabsTimeout }, async t => {
+  // Arrange: разместить целевую ячейку на второй странице таблицы.
+  const width = 10;
+  const row = index => `| ${Array.from({ length: width }, (_, column) => `Данные-${index}-${column}`).join(' | ')} |`;
+  const editedRow = 33;
+  const source = `# Результаты\n\n| ${Array.from({ length: width }, (_, index) => `Колонка ${index}`).join(' | ')} |\n${'| --- '.repeat(width)}|\n${Array.from({ length: 40 }, (_, index) => row(index + 1)).join('\n')}\n`;
+  const { page, id } = await fixture(t, source);
+  const grid = page.getByRole('grid', { name: 'Таблица Markdown' });
+  const target = grid.getByRole('gridcell', { name: `Данные-${editedRow}-1`, exact: true });
+  const firstPageCell = grid.getByRole('gridcell', { name: 'Данные-1-1', exact: true });
+  await expect(firstPageCell).toBeVisible();
+  await expect(target).toHaveCount(0);
+
+  // Act: открыть следующую страницу и сохранить правку в её первой строке.
+  await page.getByRole('button', { name: 'Следующая страница таблицы' }).click();
+  await expect(firstPageCell).toHaveCount(0);
+  await target.click();
+  const input = grid.getByRole('textbox', { name: 'Содержимое ячейки' });
+  await input.fill('Новое значение');
+  await input.press('Enter');
+
+  // Assert: сохранённый Markdown отличается только целевой ячейкой.
+  const expected = source.replace(`Данные-${editedRow}-1`, 'Новое значение');
+  await expect.poll(async () => (await getDocument(id)).source).toBe(expected);
+  await expect(grid.getByRole('gridcell', { name: 'Новое значение', exact: true })).toBeVisible();
+});
+
+test('Удалённая таблица освобождает DOM без закрытия заметки', { timeout: tabsTimeout }, async t => {
+  if (browser.browserType().name() !== 'chromium') return t.skip('Принудительная сборка мусора требует CDP.');
+  // Arrange: сохранить слабую ссылку на DOM виджета, который помещается в кэш.
+  const shortSource = '# Результаты\n\nБез таблицы.\n';
+  const source = '# Результаты\n\n| Имя | Число |\n| --- | ---: |\n| Первый | 1 |\n';
+  const { page, id } = await fixture(t, source);
+  await page.locator('.lp-table').evaluate(element => { window.deletedTableWidget = new WeakRef(element); });
+  const cdp = await page.context().newCDPSession(page);
+  const before = await getDocument(id);
+
+  // Act: заменить документ извне, оставив вкладку открытой.
+  await api(`/pages/${encodeURIComponent(id)}/document`, 'PUT', { ...tokens(before), source: shortSource });
+
+  // Assert: редактор показывает новый текст и больше не удерживает старый виджет.
+  await expect(page.locator('.vault-document:not([hidden]) .cm-content')).toContainText('Без таблицы.');
+  await expect.poll(async () => {
+    await cdp.send('HeapProfiler.collectGarbage');
+    return page.evaluate(() => window.deletedTableWidget.deref() === undefined);
+  }).toBe(true);
+});
+
 async function allowImageClipboard(page) {
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(base).origin });
   await page.evaluate(() => navigator.clipboard.writeText('Проверка буфера обмена'));
@@ -777,6 +825,73 @@ test('All diagram formats cancel without writes, save atomically and embed exist
   await expect(page.locator('.vault-tree__page').filter({ hasText: `${suffix} — Процесс` })).toHaveCount(0);
 });
 
+test('Перемещение предпросмотра draw.io не перезагружает его iframe', { timeout: tabsTimeout }, async t => {
+  // Arrange: дождаться предпросмотра встроенной схемы в Markdown-редакторе.
+  const { page, id, suffix } = await fixture(t);
+  const before = await getDocument(id);
+  const source = 'Строка перед схемой.\n\n![[./Flow.drawio|Схема]]\n';
+  const xml = '<mxfile><diagram name="Схема"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="shape" value="Пример" vertex="1" parent="1"><mxGeometry width="120" height="60" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
+  await api(`/pages/${encodeURIComponent(id)}/document`, 'PUT', {
+    ...tokens(before), source, assets: [{ path: `Fixtures/${suffix}/Flow.drawio`, source: xml, expectedVersion: null }]
+  });
+  await page.reload();
+  const widget = page.locator('.lp-diagram').filter({ has: page.locator('.drawio-block') });
+  const image = widget.locator('.drawio-preview__image');
+  await expect(image).toBeVisible({ timeout: 45_000 });
+
+  // Act: переместить виджет как при перестройке DOM редактора.
+  const sameDocument = await widget.evaluate(element => {
+    const parent = element.parentElement;
+    const frame = document.querySelector('iframe.drawio-frame-host');
+    const frameDocument = frame?.contentDocument;
+    if (!parent || !frameDocument || element === parent.firstChild) throw Error('Виджет нечего перемещать.');
+    parent.insertBefore(element, parent.firstChild);
+    return frame.contentDocument === frameDocument;
+  });
+
+  // Assert: предпросмотр сохраняет загруженный документ и не показывает предупреждение.
+  assert.equal(sameDocument, true, 'Перемещение виджета заменило документ iframe.');
+  await expect(image).toBeVisible();
+  await expect(widget.getByRole('alert')).toHaveCount(0);
+});
+
+test('draw.io вставляется после BPMN при щелчке у нижнего края схемы', { timeout: tabsTimeout }, async t => {
+  // Arrange: поместить BPMN в конец заметки, как в сценарии с дефектом.
+  const { page, id, suffix } = await fixture(t);
+  const before = await getDocument(id);
+  const source = '# Начало заметки\n\n![[./Process.bpmn|Схема]]\n\n';
+  const bpmnSource = `<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+    xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+    id="Definitions" targetNamespace="urn:livenote:test">
+    <process id="Process"><startEvent id="Start"/></process>
+    <bpmndi:BPMNDiagram id="Diagram"><bpmndi:BPMNPlane id="Plane" bpmnElement="Process">
+      <bpmndi:BPMNShape id="Shape" bpmnElement="Start"><dc:Bounds x="100" y="100" width="36" height="36"/></bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane></bpmndi:BPMNDiagram>
+  </definitions>`;
+  await api(`/pages/${encodeURIComponent(id)}/document`, 'PUT', {
+    ...tokens(before), source, assets: [{ path: `Fixtures/${suffix}/Process.bpmn`, source: bpmnSource, expectedVersion: null }]
+  });
+  await page.reload();
+  const bpmn = page.locator('.lp-diagram').filter({ has: page.locator('.bpmn-view-host .djs-container') });
+  await expect(bpmn).toBeVisible();
+  const box = await bpmn.boundingBox();
+  assert.ok(box);
+
+  // Act: открыть меню в поле редактора сбоку от нижнего края, вне самой схемы.
+  await page.mouse.click(box.x - 6, box.y + box.height - 2, { button: 'right' });
+  await page.getByRole('menuitem', { name: 'Вставить диаграмму' }).hover();
+  await page.getByRole('menuitem', { name: 'draw.io', exact: true }).click();
+  const drawioEditor = await diagramDialog(page, 'drawio');
+  await drawioEditor.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(drawioEditor).toHaveCount(0, { timeout: 30_000 });
+
+  // Assert: обе схемы сохранились в порядке вставки.
+  const saved = await getDocument(id);
+  assert.deepEqual(saved.page.blocks.filter(block => block.type !== 'markdown').map(block => block.type), ['bpmn', 'drawio']);
+  await expect(page.locator('.lp-diagram').first().locator('.bpmn-block')).toBeVisible();
+  await expect(page.locator('.lp-diagram').last().locator('.drawio-block')).toBeVisible();
+});
+
 test('Removing and undoing one identical embed preserves the other embed and shared file', { timeout: 120_000 }, async (t) => {
   // Arrange: две одинаковые вставки используют один файл без тяжёлых редакторов рядом.
   const { page, id, suffix } = await fixture(t);
@@ -808,6 +923,65 @@ test('Removing and undoing one identical embed preserves the other embed and sha
   // Assert: удалена только выбранная вставка, общий файл сохранён.
   await expect.poll(async () => (await getDocument(id)).source).toBe(withoutLastEmbed);
   assert.equal((await getDocument(assetPath)).source, assetSource);
+});
+
+async function diagramTitleFixture(t, makeSource) {
+  const { page, id, suffix } = await fixture(t);
+  const fileName = 'Flow.mmd';
+  const assetPath = `Fixtures/${suffix}/${fileName}`;
+  const assetSource = 'flowchart LR\n A-->B';
+  const source = makeSource(fileName);
+  const document = await getDocument(id);
+  await api(`/pages/${encodeURIComponent(id)}/document`, 'PUT', {
+    ...tokens(document), source,
+    assets: [{ path: assetPath, source: assetSource, expectedVersion: null }]
+  });
+  await page.reload();
+  return { page, id, source, assetPath };
+}
+
+test('Щелчок по названию схемы позволяет изменить только выбранную вставку', { timeout: tabsTimeout }, async t => {
+  // Arrange: две вставки ссылаются на один файл схемы.
+  const beforeTitle = 'Схема';
+  const newTitle = 'Размещение товара';
+  const { page, id, source, assetPath } = await diagramTitleFixture(t, fileName =>
+    `![[./${fileName}|${beforeTitle}]]\n\n![[./${fileName}|Копия схемы]]\n`);
+  const beforeAsset = await getDocument(assetPath);
+  const title = page.locator('.lp-diagram').getByRole('button', { name: beforeTitle, exact: true });
+
+  // Act: открыть поле щелчком и сохранить новое название.
+  await title.click({ timeout: 5000 });
+  const input = page.getByRole('textbox', { name: 'Название схемы', exact: true });
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue(beforeTitle);
+  await shot(page, 'diagram-title-edit');
+  await input.fill(newTitle);
+  await input.press('Enter');
+
+  // Assert: изменилось название одной вставки, а не общий файл.
+  const expected = source.replace(beforeTitle, newTitle);
+  await expect.poll(async () => (await getDocument(id)).source).toBe(expected);
+  await expect(page.locator('.lp-diagram').getByRole('button', { name: newTitle, exact: true })).toBeVisible();
+  const afterAsset = await getDocument(assetPath);
+  assert.equal(afterAsset.version, beforeAsset.version);
+  assert.equal(afterAsset.source, beforeAsset.source);
+});
+
+test('Escape отменяет редактирование названия схемы', { timeout: tabsTimeout }, async t => {
+  // Arrange: название показывает подпись обычной Markdown-вставки.
+  const beforeTitle = 'Схема';
+  const { page, id, source } = await diagramTitleFixture(t, fileName => `![${beforeTitle}](./${fileName})\n`);
+  const title = page.locator('.lp-diagram').getByRole('button', { name: beforeTitle, exact: true });
+  await title.click({ timeout: 5000 });
+  const input = page.getByRole('textbox', { name: 'Название схемы', exact: true });
+  await input.fill('Черновик названия');
+
+  // Act: отменить ввод названия.
+  await input.press('Escape');
+
+  // Assert: поле закрылось, прежнее название осталось в заметке.
+  await expect(title).toBeFocused();
+  assert.equal((await getDocument(id)).source, source);
 });
 
 test('Rejected diagram Save stays open and retries with the same valid base', { timeout: 120_000 }, async (t) => {

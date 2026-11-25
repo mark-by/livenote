@@ -9,11 +9,14 @@ mod path;
 mod plan;
 mod publication;
 mod transaction;
+#[cfg(test)]
+mod transaction_tests;
 
 use std::path::Path;
 use std::time::SystemTime;
 
 pub use error::{VaultFileError, VaultFileProblem, VaultFileProblemCode};
+pub use journal::StagedTimes;
 pub use listing::VaultListing;
 pub use path::{DirectoryChange, FileWrite, PathRename, RelativePath};
 

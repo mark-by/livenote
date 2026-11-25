@@ -166,7 +166,7 @@ export type LiveEventName =
 /** Лёгкое событие для UI: полные данные UI добирает GET-ом по pageId. */
 export interface LiveEvent {
   previousPath?: string;
-  origin?: 'api' | 'external';
+  origin?: 'api' | 'external' | 'agent';
   event: LiveEventName;
   pageId: string;
   /** Ревизия страницы после изменения. */
@@ -222,6 +222,8 @@ export interface ApiConfig {
   storage?: 'vault' | 'sqlite';
   readonly defaultVaultId?: string;
   readonly folderPickerAvailable?: boolean;
+  /** Встроенный чат агента; присутствует только в настольном vault-режиме. */
+  readonly agentChat?: boolean;
   version: string;
   tokenRequired: boolean;
   mermaidTheme: MermaidTheme;
@@ -413,3 +415,9 @@ export interface CreatePageBody {
   aliases?: string[];
   tags?: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Встроенный чат агента
+// ---------------------------------------------------------------------------
+
+export * from './agentChat.js';

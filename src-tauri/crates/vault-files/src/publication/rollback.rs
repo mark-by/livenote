@@ -1,7 +1,7 @@
 use rustix::fs::{AtFlags, RenameFlags, Stat};
 use uuid::Uuid;
 
-use crate::disk::same_inode;
+use crate::disk::{Applied, same_inode};
 use crate::journal::Change;
 use crate::{PathRename, RelativePath, VaultFileError as Error};
 
@@ -20,10 +20,10 @@ impl Publication<'_> {
         for action in self.undo.iter().rev() {
             let result = match action {
                 Undo::File(change) => self.undo_file(change),
-                Undo::Removed(path) => self.disk.mkdir(path),
+                Undo::Removed(path) => self.disk.mkdir(path).and_then(Applied::sync),
                 Undo::Created(path, original) => self.disk.stat(path).and_then(|stat| {
                     if stat.is_some_and(|stat| same_inode(&stat, original)) {
-                        self.disk.unlink(path, AtFlags::REMOVEDIR)
+                        self.disk.unlink(path, AtFlags::REMOVEDIR)?.sync()
                     } else {
                         Err(Error::stale(path.as_str()))
                     }
@@ -68,10 +68,12 @@ impl Publication<'_> {
         let staged = self.journal.entry("renamed")?;
         if location == rename.to {
             self.disk
-                .rename(&location, &staged, RenameFlags::NOREPLACE)?;
+                .rename(&location, &staged, RenameFlags::NOREPLACE)?
+                .sync()?;
         }
         self.disk
-            .rename(&staged, &rename.from, RenameFlags::NOREPLACE)
+            .rename(&staged, &rename.from, RenameFlags::NOREPLACE)?
+            .sync()
     }
 
     fn undo_file(&self, change: &Change) -> Result<(), Error> {
@@ -90,9 +92,9 @@ impl Publication<'_> {
             } else {
                 RenameFlags::empty()
             };
-            self.disk.rename(&staged, path, flags)
+            self.disk.rename(&staged, path, flags)?.sync()
         } else {
-            self.disk.unlink(path, AtFlags::empty())
+            self.disk.unlink(path, AtFlags::empty())?.sync()
         }
     }
 }

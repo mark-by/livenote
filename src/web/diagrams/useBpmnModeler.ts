@@ -4,12 +4,21 @@ import type Canvas from 'diagram-js/lib/core/Canvas';
 import type CommandStack from 'diagram-js/lib/command/CommandStack';
 import type DirectEditing from 'diagram-js-direct-editing/lib/DirectEditing';
 import type { DiagramSession } from './types';
+import type { AgentElementRef } from '../../shared/types';
 import { bpmnTranslate } from './bpmnTranslate';
 
-export function useBpmnModeler(session: DiagramSession, enabled: boolean) {
+interface SelectableElement {
+  readonly businessObject?: { id?: string };
+  readonly waypoints?: unknown[];
+}
+
+export function useBpmnModeler(session: DiagramSession, enabled: boolean, locked = false) {
   const hostRef = useRef<HTMLDivElement>(null);
   const modelerRef = useRef<Modeler | null>(null);
   const dirtyRef = useRef(false);
+  const editingElementRef = useRef<SelectableElement | undefined>(undefined);
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
   const [ready, setReady] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [history, setHistory] = useState({ undo: false, redo: false });
@@ -23,6 +32,17 @@ export function useBpmnModeler(session: DiagramSession, enabled: boolean) {
     let disposed = false;
     let imported = false;
     const stack = modeler.get<CommandStack>('commandStack');
+    const execute = stack.execute.bind(stack);
+    const undo = stack.undo.bind(stack);
+    const redo = stack.redo.bind(stack);
+    stack.execute = (command, context) => { if (!lockedRef.current) execute(command, context); };
+    stack.undo = () => { if (!lockedRef.current) undo(); };
+    stack.redo = () => { if (!lockedRef.current) redo(); };
+    modeler.on('directEditing.activate.allowed', () => lockedRef.current ? false : undefined);
+    modeler.on('directEditing.activate', (event: { active: { element: SelectableElement } }) => {
+      editingElementRef.current = event.active.element;
+    });
+    modeler.on('directEditing.deactivate', () => { editingElementRef.current = undefined; });
     const changed = (): void => {
       if (!imported || disposed) return;
       // Undo до исходного состояния не требует повторной сериализации XML.
@@ -43,6 +63,7 @@ export function useBpmnModeler(session: DiagramSession, enabled: boolean) {
     });
     return () => {
       disposed = true;
+      editingElementRef.current = undefined;
       modelerRef.current = null;
       modeler.destroy();
     };
@@ -59,8 +80,18 @@ export function useBpmnModeler(session: DiagramSession, enabled: boolean) {
     return result.xml;
   };
 
+  const selection = (): AgentElementRef[] => {
+    const elements = modelerRef.current?.get<{ get(): SelectableElement[] }>('selection').get() ?? [];
+    // При правке подписи bpmn-js снимает выделение с редактируемой фигуры.
+    const editingElement = editingElementRef.current;
+    return (elements.length || !editingElement ? elements : [editingElement]).flatMap(element => {
+      const id = element.businessObject?.id;
+      return id ? [{ id, kind: element.waypoints ? 'edge' : 'node' }] : [];
+    });
+  };
+
   return {
-    hostRef, modelerRef, ready, dirty, history, error, setError, xml,
+    hostRef, modelerRef, ready, dirty, history, error, setError, xml, selection,
     undo: () => modelerRef.current?.get<CommandStack>('commandStack').undo(),
     redo: () => modelerRef.current?.get<CommandStack>('commandStack').redo(),
     fit: () => modelerRef.current?.get<Canvas>('canvas').zoom('fit-viewport')

@@ -38,11 +38,12 @@ function VaultPaneFrame({ pane, workspace, title, visible = true, children }: {
   </div>;
 }
 
-export function VaultEditors({ workspace, theme, vimEnabled, onRevealFolder }: {
+export function VaultEditors({ workspace, theme, vimEnabled, onRevealFolder, agentPanel }: {
   readonly workspace: VaultWorkspace;
   readonly theme: 'light' | 'dark';
   readonly vimEnabled: boolean;
   readonly onRevealFolder: (path: string) => void;
+  readonly agentPanel?: ReactNode;
 }): React.JSX.Element {
   const { activeId, paneLayout } = workspace;
   const [vimModes, setVimModes] = useState<ReadonlyMap<string, EditorVimMode>>(() => new Map());
@@ -59,6 +60,7 @@ export function VaultEditors({ workspace, theme, vimEnabled, onRevealFolder }: {
         // Один ключ на файл: разделение и переключение областей не пересоздают редактор.
         return <VaultPaneFrame key={path} workspace={workspace} pane={pane} title={title} visible={visible}>
           {document ? <VaultDocumentView workspace={workspace} document={document} active={visible} theme={theme}
+            agentPanel={workspace.agentDiagramPath === path ? agentPanel : undefined}
             vimEnabled={vimEnabled} onRevealFolder={onRevealFolder} onVimModeChange={mode => setVimModes(previous => {
               if ((previous.get(path) ?? 'normal') === mode) return previous;
               const next = new Map(previous);

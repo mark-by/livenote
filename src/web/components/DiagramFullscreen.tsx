@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { Button } from '@heroui/react';
+import { useImperativeHandle, useRef, useState } from 'react';
+import { Button, Modal } from '@heroui/react';
 import { ArrowDownToLine, MagnifierPlus, MagnifierMinus, ArrowsExpand } from '@gravity-ui/icons';
 import type { Block } from '../../shared/types';
 import { updateBlock } from '../api';
@@ -11,11 +11,11 @@ import { useDiagramEditor } from './useDiagramEditor';
 import { DiagramAction } from '../diagrams/DiagramAction';
 import { BpmnDiagramDialog } from '../diagrams/BpmnDiagramDialog';
 import { useMermaidViewport } from '../diagrams/useMermaidViewport';
-import { useFullscreenFocus } from '../diagrams/useFullscreenFocus';
-import type { DiagramCommit } from '../diagrams/types';
+import { agentDialogLayout } from '../diagrams/types';
+import type { DiagramAgentProps, DiagramCommit } from '../diagrams/types';
 import { MermaidSourcePanel } from '../diagrams/MermaidSourcePanel';
 
-interface DiagramFullscreenProps {
+interface DiagramFullscreenProps extends DiagramAgentProps {
   readonly block: Block;
   readonly pageTitle: string;
   readonly pageRevision: number;
@@ -31,6 +31,7 @@ export function DiagramFullscreen(props: DiagramFullscreenProps): React.JSX.Elem
     return <BpmnDiagramDialog
       session={{ key: props.block.id, mode: props.initialEditing ? 'edit' : 'view',
         value: { format: 'bpmn', source: props.block.source, title: props.block.title ?? props.pageTitle } }}
+      agentPanel={props.agentPanel} agentEditorRef={props.agentEditorRef} agentLocked={props.agentLocked}
       onCancel={props.onClose}
       onSave={async (value, options) => {
         if (props.onCommit) {
@@ -50,9 +51,18 @@ export function DiagramFullscreen(props: DiagramFullscreenProps): React.JSX.Elem
 }
 
 function MermaidFullscreen({
-  block, pageTitle, pageRevision, onSaved, onClose, onCommit, initialEditing, persisted = true
+  block, pageTitle, pageRevision, onSaved, onClose, onCommit, initialEditing, persisted = true,
+  agentPanel, agentEditorRef, agentLocked = false
 }: DiagramFullscreenProps): React.JSX.Element {
-  const editor = useDiagramEditor({ block, pageRevision, onSaved, onClose, onCommit, initialEditing });
+  const editor = useDiagramEditor({ block, pageRevision, onSaved, onClose, onCommit, initialEditing, agentLocked, agentContext: !!agentEditorRef });
+  useImperativeHandle(agentEditorRef, () => ({
+    capture() {
+      if (editor.saving || editor.dialog) throw new Error('Дождитесь завершения действия в редакторе Mermaid.');
+      if (!editor.valid) throw new Error(editor.error ?? 'Исправьте исходник Mermaid перед отправкой.');
+      const { selection, source } = editor;
+      return { selected: selection ? [{ kind: selection.type, id: selection.id }] : [], source: Promise.resolve(source) };
+    }
+  }));
   const [sourceEditing, setSourceEditing] = useState(initialEditing === true && editor.model === null);
   const editorRef = useRef(editor);
   editorRef.current = editor;
@@ -61,14 +71,19 @@ function MermaidFullscreen({
   const save = (): void => {
     if (editor.editing && previewReady && editor.valid) void editor.save();
   };
-  const focus = useFullscreenFocus({
-    close: () => { void editor.close(); }, suspended: editor.dialog !== null, saving: editor.saving,
-    save
-  });
-
   return (
-    <div className="diagram-fullscreen" role="dialog" aria-modal="true"
-      aria-label={`${pageTitle} — схема Mermaid`} onKeyDown={focus.onKeyDown}>
+    <>
+    <Modal.Backdrop isOpen isDismissable={false} isKeyboardDismissDisabled={agentLocked || editor.saving || editor.dialog !== null}
+      onOpenChange={(open) => { if (!open) void editor.close(); }}>
+      <Modal.Container size="full" className="diagram-fullscreen-container">
+        <Modal.Dialog className="diagram-fullscreen" aria-label={`${pageTitle} — схема Mermaid`} style={agentPanel ? agentDialogLayout : undefined}>
+          <div className="diagram-fullscreen__content" onKeyDown={(event) => {
+            event.stopPropagation();
+            if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+              event.preventDefault();
+              if (!editor.saving) save();
+            }
+          }}>
       <div className="diagram-fullscreen__panel">
         <div className="diagram-fullscreen__heading">
           <span className="diagram-fullscreen__title">{pageTitle}</span>
@@ -79,13 +94,13 @@ function MermaidFullscreen({
           Ошибка рендера диаграммы: {view.error}
         </div>}
         <div className="diagram-fullscreen__controls">
-          {editor.editing ? <>
+          {editor.editing ? <fieldset disabled={agentLocked} style={{ display: 'contents' }}>
             <Button variant="primary" className="diagram-fullscreen__btn diagram-fullscreen__btn--primary"
               isDisabled={(!editor.dirty && !onCommit) || editor.saving || !editor.valid || !previewReady}
               onPress={save}>{editor.saving ? 'Сохранение…' : 'Сохранить'}</Button>
             <Button variant="ghost" className="diagram-fullscreen__btn" isDisabled={editor.saving}
               onPress={() => { void editor.cancel(); }}>Отмена</Button>
-          </> : <Button variant="secondary" className="diagram-fullscreen__btn" onPress={() => {
+          </fieldset> : <Button isDisabled={agentLocked} variant="secondary" className="diagram-fullscreen__btn" onPress={() => {
             setSourceEditing(editor.model === null);
             editor.start();
           }} aria-label="Редактировать">Редактировать</Button>}
@@ -110,8 +125,8 @@ function MermaidFullscreen({
               const filename = diagramFilename(pageTitle, block.id, 'mmd');
               void downloadMermaid('mmd', filename, block, editor.source);
             }}>Mermaid</Button>
-          <Button ref={focus.closeRef} variant="ghost" className="diagram-fullscreen__btn diagram-fullscreen__btn--close"
-            onPress={() => { void editor.close(); }} isDisabled={editor.saving} aria-label="Закрыть">Закрыть</Button>
+          <Button variant="ghost" className="diagram-fullscreen__btn diagram-fullscreen__btn--close"
+            onPress={() => { void editor.close(); }} isDisabled={editor.saving || agentLocked} aria-label="Закрыть">Закрыть</Button>
         </div>
       </div>
       <div className="diagram-fullscreen__workspace">
@@ -120,11 +135,16 @@ function MermaidFullscreen({
             <div className="diagram-fullscreen__svg" ref={view.hostRef} onClick={editor.selectFromDiagram} />
           </div>
         </div>
-        {editor.editing && (sourceEditing
+        {editor.editing && <div style={{ display: 'contents' }} inert={agentLocked}>{sourceEditing
           ? <MermaidSourcePanel editor={editor} />
-          : <DiagramEditorPanel editor={editor} />)}
+          : <DiagramEditorPanel editor={editor} />}</div>}
       </div>
-      {editor.dialog}
-    </div>
+          </div>
+          {agentPanel && <div className="min-h-0 overflow-auto">{agentPanel}</div>}
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
+    {editor.dialog}
+    </>
   );
 }

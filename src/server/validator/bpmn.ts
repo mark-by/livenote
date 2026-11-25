@@ -18,6 +18,7 @@ import { BpmnModdle } from 'bpmn-moddle';
 import type { BpmnModdleRootElement } from 'bpmn-moddle';
 import linterModule from 'bpmnlint/lib/linter.js';
 import NodeResolver from 'bpmnlint/lib/resolver/node-resolver.js';
+import { BoundedCache, withTimeout } from './limits.js';
 
 /** Таймаут операций в браузере: зависший рендер не подвесит инструмент. */
 const OPERATION_TIMEOUT_MS = 15_000;
@@ -89,42 +90,9 @@ interface BrowserDocument {
   querySelector(selectors: string): { outerHTML: string; offsetWidth: number; offsetHeight: number } | null;
 }
 
-/** Кеш с лимитом записей: при переполнении вытесняется самая старая. */
-class BoundedCache<T> {
-  private readonly entries = new Map<string, T>();
-
-  constructor(private readonly limit: number) {}
-
-  get(key: string): T | undefined {
-    return this.entries.get(key);
-  }
-
-  set(key: string, value: T): void {
-    // Повторная запись подвигает ключ в конец: свежие записи вытесняются последними.
-    this.entries.delete(key);
-    this.entries.set(key, value);
-    while (this.entries.size > this.limit) {
-      const oldest = this.entries.keys().next();
-      if (oldest.done === true) break;
-      this.entries.delete(oldest.value);
-    }
-  }
-}
-
 /** sha256-ключ кеша из частей, склеенных через '|'. */
 function sha256(parts: readonly string[]): string {
   return createHash('sha256').update(parts.join('|')).digest('hex');
-}
-
-/** Ограничить промис таймаутом: зависший Chromium не подвесит вызов. */
-function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Таймаут операции "${label}" (${OPERATION_TIMEOUT_MS} мс)`)), OPERATION_TIMEOUT_MS);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
 }
 
 /**
@@ -322,13 +290,13 @@ export class NodeBrowserBpmnValidator implements BpmnValidator {
   private async attempt<T>(label: string, task: (page: Page) => Promise<T>): Promise<T> {
     try {
       // Таймаут накрывает и подготовку страницы, и саму операцию.
-      return await withTimeout(task(await this.ensurePage()), label);
+      return await withTimeout(task(await this.ensurePage()), label, OPERATION_TIMEOUT_MS);
     } catch (firstError) {
       const reason = firstError instanceof Error ? firstError.message : firstError;
       console.error(`[livenote] bpmn-валидатор: "${label}" не удалась, пересоздаю окружение:`, reason);
       await this.page?.close().catch(() => undefined);
       this.page = undefined;
-      return withTimeout(task(await this.ensurePage()), label);
+      return withTimeout(task(await this.ensurePage()), label, OPERATION_TIMEOUT_MS);
     }
   }
 
@@ -368,7 +336,8 @@ export class NodeBrowserBpmnValidator implements BpmnValidator {
     try {
       return await withTimeout(
         page.evaluate(() => typeof (globalThis as { BpmnJS?: unknown }).BpmnJS === 'function'),
-        'проверка bpmn-js'
+        'проверка bpmn-js',
+        OPERATION_TIMEOUT_MS
       );
     } catch {
       return false;

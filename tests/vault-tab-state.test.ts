@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { remapPath } from '../src/web/vault/vaultPaths.ts';
-import { closeVaultPane, openVaultTab, remapVaultTabPaths, removeVaultTabs, splitVaultTab } from '../src/web/vault/vaultTabState.ts';
+import { vaultPanes } from '../src/web/vault/vaultPaneState.ts';
+import { closeVaultPane, focusVaultPane, openVaultTab, remapVaultTabPaths, removeVaultTabs, splitVaultTab } from '../src/web/vault/vaultTabState.ts';
 import type { VaultTabState } from '../src/web/vault/vaultTabState.ts';
 
 const first = 'Проект/Первый.md';
@@ -149,4 +150,40 @@ test('новый файл заменяет скрытый предпросмот
 
   // Assert: новый файл занимает прежнее место вкладки предпросмотра.
   assert.deepEqual(result, { openTabs: [first, next, last], activeId: next, previewId: next });
+});
+
+for (const { name, focused, expectedTabs, expectedPanes } of [
+  { name: 'сохраняет предпросмотр слева при открытии файла справа', focused: 1,
+    expectedTabs: [first, preview, next], expectedPanes: [preview, next] },
+  { name: 'заменяет предпросмотр в выбранной панели', focused: 0,
+    expectedTabs: [first, next], expectedPanes: [next, first] }
+]) {
+  test(`workspace A4: ${name}`, () => {
+    // Arrange: закреплённая вкладка справа, предпросмотр слева.
+    const initial: VaultTabState = { openTabs: [first], activeId: first, previewId: null };
+    const split = splitVaultTab(initial, first, 'right');
+    const withPreviewOnLeft = openVaultTab(focusVaultPane(split, 0), preview, true);
+    const state = focusVaultPane(openVaultTab(focusVaultPane(withPreviewOnLeft, 1), first, true), focused);
+
+    // Act: открываем третий файл с разрешением заменить предпросмотр.
+    const result = openVaultTab(state, next, true);
+
+    // Assert: замена не затрагивает соседнюю панель.
+    assert.deepEqual(result.openTabs, expectedTabs);
+    assert.equal(result.activeId, next);
+    assert.equal(result.previewId, next);
+    assert.ok(result.layout);
+    assert.deepEqual(vaultPanes(result.layout.root).map((pane) => pane.path), expectedPanes);
+  });
+}
+
+test('workspace A4: закрытие неактивной вкладки сохраняет выбор среди нескольких соседей', () => {
+  // Arrange: справа от активной вкладки остаётся кандидат для ошибочного переключения.
+  const state: VaultTabState = { openTabs: [first, preview, next, last], activeId: preview, previewId: preview };
+
+  // Act: закрываем вкладку справа, не трогая активную.
+  const result = removeVaultTabs(state, new Set([next]));
+
+  // Assert: остаются три вкладки, выбор и предпросмотр не меняются.
+  assert.deepEqual(result, { openTabs: [first, preview, last], activeId: preview, previewId: preview });
 });

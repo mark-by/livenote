@@ -179,3 +179,38 @@ test('Правка исходника обновляет общие опреде
   }
   assert.deepEqual(tableRanges, [{ from: tableFrom, to: tableFrom + table.length }]);
 });
+
+test('preview F4: локальная правка не считывает всю заметку для повторного разбора', context => {
+  // Arrange: таблица заполняет общий кеш при открытии заметки.
+  const paragraph = 'Текст заметки.';
+  const source = `${paragraph}\n\n| A | B |\n| --- | --- |\n| [Документ][ref] | ячейка |\n\n[ref]: ./target.md`;
+  const state = EditorState.create({ doc: source, extensions: [markdown({ base: markdownLanguage }), tableExtension] });
+  const insert = '📝 ';
+  const from = paragraph.indexOf('заметки');
+
+  // Act: правка сдвигает таблицу, но не меняет блоки или определения.
+  const transaction = state.update({ changes: { from, insert } });
+  const fullRead = context.mock.method(transaction.newDoc, 'toString');
+  const updated = transaction.state;
+  const [link] = parseEditorLinks(updated.doc);
+
+  // Assert: ссылка сохранила цель и получила новый диапазон без чтения всей заметки.
+  assert.equal(fullRead.mock.callCount(), 0);
+  assert.equal(link?.target, './target.md');
+  assert.equal(link?.from, source.indexOf('[Документ]') + insert.length);
+  assert.deepEqual(parseEditorLinks(updated.doc), parseEditorLinks(updated.doc.sliceString(0)));
+});
+
+test('preview F4: удаление закрывающего fence скрывает ссылку ниже блока', () => {
+  // Arrange: закрытый блок кода отделён от действующей wiki-ссылки.
+  const source = 'Текст заметки.\n\n```text\nсодержимое\n```\n\n[[Документ]]';
+  const state = EditorState.create({ doc: source, extensions: [diagramRenderer.of(() => null), diagramSelection] });
+  assert.equal(parseEditorLinks(state.doc)[0]?.target, 'Документ');
+  const from = source.lastIndexOf('```');
+
+  // Act: удаляем маркер, сохраняя строки под ним.
+  const updated = state.update({ changes: { from, to: from + 3 }, selection: { anchor: from } }).state;
+
+  // Assert: незакрытый блок включает ссылку, поэтому она не открывается.
+  assert.deepEqual(parseEditorLinks(updated.doc), []);
+});

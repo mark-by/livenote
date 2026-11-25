@@ -31,6 +31,8 @@ export class VaultStore implements PageStore {
   private watcher?: FSWatcher;
   private timer?: ReturnType<typeof setInterval>;
   private debounce?: ReturnType<typeof setTimeout>;
+  private readonly fileEvents = new Set<string>();
+  private rescan = false;
   private closed = false;
   private deferred: FileWrite[] | null = null;
   constructor(path: string, private readonly broadcaster?: Broadcaster, options?: { readonly cachePath?: string }) {
@@ -40,10 +42,17 @@ export class VaultStore implements PageStore {
       this.projection = new VaultProjection(this.index?.load() ?? new Map());
       this.reconcile(false); this.cleanupIdempotency(86_400_000);
       this.watcher = watch(this.files.root, { recursive: true }, (_event, filename) => {
-        if (filename && (String(filename) === '.livenote' || String(filename).startsWith('.livenote/'))) return;
-        clearTimeout(this.debounce); this.debounce = setTimeout(() => this.reconcile(true), 60); this.debounce.unref();
+        const path = filename?.toString().split(process.platform === 'win32' ? '\\' : '/').join('/');
+        if (path?.split('/').some(part => part === '.livenote' || part === '.git')) return;
+        // На macOS запись в существующий файл может прийти как rename.
+        if (path) this.fileEvents.add(path);
+        else this.rescan = true;
+        this.debounce ??= setTimeout(() => this.refreshRead(), 60).unref();
       });
-      this.watcher.on('error', () => { this.watcher?.close(); this.watcher = undefined; });
+      this.watcher.on('error', () => {
+        this.watcher?.close(); this.watcher = undefined;
+        this.reconcile();
+      });
       this.timer = setInterval(() => this.reconcile(true), 1000); this.timer.unref();
     } catch (error) { this.files.close(); throw error; }
   }
@@ -62,10 +71,29 @@ export class VaultStore implements PageStore {
     }
   }
   reconcile(external = true): void {
+    this.refreshProjection(external);
+  }
+  private refreshRead(id?: string): void {
+    if (this.closed || this.deferred) return;
+    const dirty = this.rescan ? undefined : this.projection.changes(this.files, this.fileEvents, id);
+    if (dirty === undefined || dirty.size) this.refreshProjection(true, dirty);
+    else {
+      this.clearFileEvents();
+      this.index?.repair();
+    }
+  }
+  private clearFileEvents(): void {
+    clearTimeout(this.debounce);
+    this.debounce = undefined;
+    this.fileEvents.clear();
+    this.rescan = false;
+  }
+  private refreshProjection(external: boolean, dirty?: ReadonlySet<string>): void {
     if (this.closed) return;
+    this.clearFileEvents();
     const previous = this.pages;
     const lastTree = this.projection.treeVersion;
-    const { pages: next, problems, links, folders, records } = this.projection.reconcile(this.files, this.deferred);
+    const { pages: next, problems, links, folders, records } = this.projection.reconcile(this.files, this.deferred, dirty);
     this.pages = next; this.problems = problems; this.links = links; this.folders = folders;
     if (!this.deferred) this.index?.save(records);
     for (const id of this.renders.keys()) {
@@ -80,7 +108,11 @@ export class VaultStore implements PageStore {
   }
   private treeVersion(): string { return this.projection.treeVersion; }
   snapshot(): VaultSnapshot {
+    // Версия дерева служит условием записи. Она учитывает изменения до доставки файлового события.
     this.reconcile();
+    return this.currentSnapshot();
+  }
+  private currentSnapshot(): VaultSnapshot {
     const documents = [...this.pages.values()].map(item => item.document).sort((a, b) => a.path.localeCompare(b.path));
     const pages = documents.filter(d => d.path.endsWith('.md')).map(d => ({ id: d.path, title: d.page.title, revision: d.page.revision, createdAt: d.page.createdAt, updatedAt: d.page.updatedAt, path: d.path, aliases: d.aliases, tags: d.tags }));
     const tags = new Map<string, number>(); for (const page of pages) for (const tag of page.tags) tags.set(tag, (tags.get(tag) ?? 0) + 1);
@@ -88,14 +120,14 @@ export class VaultStore implements PageStore {
       folders: this.folders, treeVersion: this.treeVersion(), tags: [...tags].map(([tag, count]) => ({ tag, count })).sort((a, b) => a.tag.localeCompare(b.tag)), problems: this.problems };
     return snapshot;
   }
-  listPages() { return this.snapshot().pages; }
+  listPages() { this.refreshRead(); return this.currentSnapshot().pages; }
   exportArchive(): Buffer {
     const scan = this.files.list();
     if (scan.problems.length) throw new InvalidRequestError('Небезопасный файл в экспорте', scan.problems);
     return vaultZip([...scan.folders.filter(Boolean).map(path => ({ path: path + '/', bytes: Buffer.alloc(0) })), ...scan.files.map(path => ({ path, bytes: this.files.readBytes(path).bytes }))]);
   }
-  getPage(id: string): PageFull | undefined { this.reconcile(); validateNotePath(id); return this.pages.get(id)?.document.page; }
-  document(id: string): VaultDocument { validateNotePath(id); this.reconcile(); return this.require(id).document; }
+  getPage(id: string): PageFull | undefined { validateNotePath(id); this.refreshRead(id); return this.pages.get(id)?.document.page; }
+  document(id: string): VaultDocument { validateNotePath(id); this.refreshRead(id); return this.require(id).document; }
   private require(id: string): ParsedVaultDocument {
     const parsed = this.pages.get(id);
     if (parsed) return parsed;
@@ -105,10 +137,19 @@ export class VaultStore implements PageStore {
   }
   check(id: string, revision: number, version?: string): ParsedVaultDocument {
     validateNotePath(id); this.reconcile();
+    return this.assertCurrent(id, revision, version);
+  }
+  private assertCurrent(id: string, revision: number, version?: string): ParsedVaultDocument {
     if (!this.pages.has(id) && !this.problems.some(problem => problem.path === id)) throw new AppError('conflict', 'Документ удалён', 409, { currentRevision: 0, reason: 'missing', paths: [id] });
     const current = this.require(id);
     if (current.document.page.revision !== revision || (version !== undefined && current.document.version !== version)) this.conflict([id], current.document);
     return current;
+  }
+  private checkGuards(guards: readonly ParsedVaultDocument[], treeVersion?: string): void {
+    if (!guards.length && treeVersion === undefined) return;
+    this.reconcile();
+    for (const { document } of guards) this.assertCurrent(document.path, document.page.revision, document.version);
+    if (treeVersion !== undefined) this.assertTree(treeVersion);
   }
   private conflict(paths: string[], document?: VaultDocument): never {
     throw new AppError('conflict', 'Файлы изменились; перечитайте документ', 409, { currentRevision: document?.page.revision ?? 0, currentVersion: document?.version, currentTreeVersion: this.treeVersion(), reason: 'stale', paths });
@@ -118,7 +159,7 @@ export class VaultStore implements PageStore {
     catch (error) { if (error instanceof DocumentProblem) throw new InvalidRequestError(error.message, { code: error.code, path }); throw error; }
   }
   private publish(writes: FileWrite[], guards: ParsedVaultDocument[] = [], directories: DirectoryChange[] = []): void {
-    for (const guard of guards) this.check(guard.document.path, guard.document.page.revision, guard.document.version);
+    this.checkGuards(guards);
     const before = new Map([...this.pages].map(([id, item]) => [id, item.document.version]));
     if (this.deferred) {
       this.files.assertAuthorable(writes.map(write => ({ path: write.path, directory: false })));
@@ -128,8 +169,8 @@ export class VaultStore implements PageStore {
     this.reconcile(false);
     this.changedPages = [...this.pages].filter(([id, item]) => before.get(id) !== item.document.version).map(([id, item]) => ({ id, revision: item.document.page.revision }));
   }
-  private destinationFree(path: string, except?: string): void {
-    validateVaultPath(path); const scan = this.files.list();
+  private destinationFree(path: string, except?: string, scan = this.files.list()): void {
+    validateVaultPath(path);
     const parents = path.split('/').slice(0, -1).map((_, index) => path.split('/').slice(0, index + 1).join('/'));
     if (parents.some(parent => scan.folders.some(folder => folded(folder) === folded(parent) && folder !== parent)) ||
         [...scan.files, ...scan.folders].some(other => other !== except && folded(other) === folded(path)) || (path !== except && existsSync(this.files.absolute(path)))) {
@@ -275,6 +316,9 @@ export class VaultStore implements PageStore {
   }
   private checkTree(version: string): void {
     this.reconcile();
+    this.assertTree(version);
+  }
+  private assertTree(version: string): void {
     if (typeof version !== 'string' || version !== this.treeVersion()) this.conflict([]);
   }
   createFolder(path: string, version: string): VaultSnapshot {
@@ -294,11 +338,10 @@ export class VaultStore implements PageStore {
     if (folder && path.startsWith(from + '/')) throw new InvalidRequestError('Нельзя переместить папку внутрь себя');
     const scan = this.files.list();
     if (folder && !scan.folders.includes(from)) throw new NotFoundError('Папка не найдена');
-    if (from === path) return { ...(folder ? {} : { document: this.document(from) }), moved: [], updatedPaths: [], treeVersion: this.treeVersion() };
+    if (from === path) return { ...(folder ? {} : { document: this.require(from).document }), moved: [], updatedPaths: [], treeVersion: this.treeVersion() };
     if (folder && scan.hiddenEntries.some(entry => entry.startsWith(from + '/'))) throw new InvalidRequestError('Папка содержит скрытые пути');
     const caseOnly = folded(from) === folded(path);
-    if (!caseOnly) this.destinationFree(path, from);
-    else if ([...scan.files, ...scan.folders].includes(path)) this.destinationFree(path, from);
+    if (!caseOnly || [...scan.files, ...scan.folders].includes(path)) this.destinationFree(path, from, scan);
     const selected = scan.files.filter(file => file === from || (folder && file.startsWith(from + '/')));
     const folders = folder ? scan.folders.filter(dir => dir === from || dir.startsWith(from + '/')) : [];
     if (scan.problems.some(problem => problem.path === from || problem.path.startsWith(from + '/'))) throw new InvalidRequestError('Небезопасное дерево');
@@ -327,19 +370,19 @@ export class VaultStore implements PageStore {
       const source = candidate && file.endsWith('.md') ? rewritePaths(candidate.document, links, mapping) : bytes;
       if (to === file && (typeof source !== 'string' || source === parsed?.document.source)) continue;
       if (caseOnly && to !== file) {
-        if (typeof source === 'string' && source !== parsed?.document.source) writes.push({ path: to, expected: bytes, source });
+        // Даже без замены содержимого перенос должен проверить исходные байты.
+        writes.push({ path: to, expected: bytes, source });
       } else {
         if (to !== file) writes.push({ path: file, expected: bytes, source: null });
         writes.push({ path: to, expected: to === file ? bytes : null, source });
       }
       updatedPaths.push(to); if (parsed) guards.push(parsed);
     }
-    for (const guard of guards) this.check(guard.document.path, guard.document.page.revision, guard.document.version);
-    if (options.version !== undefined) this.checkTree(options.version);
+    this.checkGuards(guards, options.version);
     this.files.commit(writes, caseOnly ? [] : [...folders.map(old => ({ path: mapping.get(old) ?? '', old: false, next: true })), ...folders.map(path => ({ path, old: true, next: false }))], caseOnly ? { from, to: path } : undefined);
     this.reconcile(false);
     this.changedPages = [...this.pages].filter(([id, item]) => previous.get(id) !== item.document.version).map(([id, item]) => ({ id, revision: item.document.page.revision }));
-    return { ...(folder ? {} : { document: this.document(path) }), moved: [...mapping].map(([from, to]) => ({ from, to })), updatedPaths, treeVersion: this.treeVersion() };
+    return { ...(folder ? {} : { document: this.require(path).document }), moved: [...mapping].map(([from, to]) => ({ from, to })), updatedPaths, treeVersion: this.treeVersion() };
   }
   deleteFolder(path: string, version: string, recursive = false): VaultSnapshot {
     this.checkTree(version); validateVaultPath(path); const scan = this.files.list();
@@ -355,7 +398,7 @@ export class VaultStore implements PageStore {
   }
   search(q = '', tag?: string): VaultSearchHit[] {
     if (q.length > 500) throw new InvalidRequestError('Поиск ограничен 500 символами');
-    this.reconcile(); const tokens = folded(q.trim()).split(/\s+/).filter(Boolean); const hits: VaultSearchHit[] = [];
+    this.refreshRead(); const tokens = folded(q.trim()).split(/\s+/).filter(Boolean); const hits: VaultSearchHit[] = [];
     for (const { document: d, prose: parsedProse } of this.pages.values()) {
       if (!d.path.endsWith('.md') || (tag !== undefined && !d.tags.includes(tag))) continue;
       const prose = parsedProse.replace(/\s+/g, ' '); const haystack = folded([d.page.title, ...d.aliases, d.path, prose].join('\n'));

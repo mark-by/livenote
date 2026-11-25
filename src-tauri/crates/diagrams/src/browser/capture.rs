@@ -40,7 +40,7 @@ impl Browser {
             return Ok(None);
         }
         let session = Some(page.session_id.as_str());
-        timeout(PNG_TIMEOUT, async {
+        let capture = timeout(PNG_TIMEOUT, async {
             self.cdp
                 .call::<Value>(
                     session,
@@ -62,7 +62,14 @@ impl Browser {
                 .await?;
             Ok(Some(screenshot.data))
         })
-        .await
-        .map_err(|_| DiagramError::Timeout)?
+        .await;
+        match capture {
+            Ok(result) => result,
+            Err(_) => {
+                // Таймаут мог оборвать кадр CDP. Канал больше нельзя использовать.
+                self.cdp_usable = false;
+                Err(DiagramError::Timeout)
+            }
+        }
     }
 }

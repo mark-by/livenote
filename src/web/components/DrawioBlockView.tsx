@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '@heroui/react';
 import type { Block } from '../../shared/types';
 import { confirmRendered, downloadBlockPng } from '../api';
@@ -110,8 +111,12 @@ export function DrawioBlockView({ block, pageRevision, pageTitle, onExpand, pers
           {persisted && <Button variant="ghost" size="sm" className="drawio-controls__btn" aria-label="Скачать PNG" onPress={downloadPng}>PNG</Button>}
         </div>
       </div>
-      <iframe ref={iframeRef} className="drawio-frame-host" title="Локальный рендер draw.io"
-        aria-hidden="true" tabIndex={-1} />
+      {/* Перемещение блока Markdown не должно перезагружать фоновый iframe. */}
+      {createPortal(
+        <iframe ref={iframeRef} className="drawio-frame-host" title="Локальный рендер draw.io"
+          aria-hidden="true" tabIndex={-1} />,
+        document.body
+      )}
       {failure && svgUrl && <div className="drawio-error" role="alert">{failure}</div>}
       {showStaleBadge && <div className="block__badge">Отображается предыдущая версия схемы</div>}
     </div>

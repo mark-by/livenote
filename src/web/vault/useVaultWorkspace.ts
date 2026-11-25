@@ -1,24 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { LiveEvent, VaultDocument, VaultMoveResult, VaultSearchHit, VaultSnapshot } from '../../shared/types';
+import type { AgentFocus, AgentProgressTarget, AgentTarget, LiveEvent, VaultDocument, VaultMoveResult, VaultSearchHit, VaultSnapshot } from '../../shared/types';
 import {
   ApiError, clearToken, createPage, createVaultFolder, deletePage, deleteVaultFolder, getToken,
   getVaultDocument, getVaultSnapshot, moveVaultFolder, moveVaultPage,
   searchVault, setToken, UNAUTHORIZED_EVENT
 } from '../api';
 import { connectVaultEvents } from './vaultEvents';
-import { TEXT_WRITE_CONFLICT, VaultDocumentWrites } from './vaultDocumentWrites';
+import { documentWriteBody, TEXT_WRITE_CONFLICT, VaultDocumentWrites } from './vaultDocumentWrites';
 import type { DiagramWrite, VaultDraft } from './vaultDocumentWrites';
-import { remapPath } from './vaultPaths';
 import { resizeSplit } from './vaultPaneState';
 import type { SplitDirection } from './vaultPaneState';
-import { closeVaultPane, focusVaultPane, openVaultTab, remapVaultTabPaths, removeVaultTabs, splitVaultTab } from './vaultTabState';
+import { closeVaultPane, focusVaultPane, openVaultTab, removeVaultTabs, splitVaultTab } from './vaultTabState';
 import type { VaultTabState } from './vaultTabState';
+import { isVaultDraftDirty, relocateVaultWorkspace } from './vaultWorkspaceMove';
+import type { FollowTarget, FragmentTarget, HistoryState } from './vaultWorkspaceMove';
+import { prepareDiagramWrite } from './vaultAgentContext';
+import type { OpenAgentDiagram } from './vaultAgentContext';
+import { formatForPath } from './vaultPaths';
 
 const STORAGE_TABS = 'livenote_open_tabs';
 const STORAGE_ACTIVE = 'livenote_active_tab';
 const EMPTY_SNAPSHOT: VaultSnapshot = { pages: [], files: [], folders: [''], treeVersion: '', tags: [], problems: [] };
 
-interface HistoryState { readonly entries: readonly string[]; readonly index: number }
+interface AgentOperation {
+  readonly paths: ReadonlySet<string>;
+  readonly deferredLoads: Set<string>;
+  diagram?: { editor: OpenAgentDiagram; target: AgentTarget };
+}
 
 // Обработчики и ответы сервера видят последнее изменение до следующего рендера.
 function useCurrentState<T>(initialize: () => T) {
@@ -71,13 +79,26 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [selectedFolder, setSelectedFolder] = useState('');
-  const [fragmentTarget, setFragmentTarget] = useState<{ pageId: string; fragment: string } | null>(null);
-  const [followTarget, setFollowTarget] = useState<{ pageId: string; version: string; position: number } | null>(null);
+  const [fragmentTarget, setFragmentTarget, fragmentTargetRef] = useCurrentState<FragmentTarget | null>(() => null);
+  const [followTarget, setFollowTarget, followTargetRef] = useCurrentState<FollowTarget | null>(() => null);
   const [moveGeneration, setMoveGeneration] = useState(0);
 
   const loadsRef = useRef(new Map<string, symbol>());
-  const snapshotRequestRef = useRef(0);
+  const snapshotRefreshRef = useRef<{ pending: boolean; running: Promise<VaultSnapshot> | null }>({ pending: false, running: null });
   const [documentWrites] = useState(() => new VaultDocumentWrites());
+  const [agentDiagramPath, setAgentDiagramPath] = useState<string | null>(null);
+  const agentDiagramRef = useRef<OpenAgentDiagram | null>(null);
+  const [agentOperation, setAgentOperation, agentOperationRef] = useCurrentState<AgentOperation | null>(() => null);
+  const isAgentLocked = useCallback((path: string): boolean => agentOperationRef.current?.paths.has(path) ?? false, [agentOperationRef]);
+  const registerAgentDiagram = useCallback((editor: OpenAgentDiagram): (() => void) => {
+    agentDiagramRef.current = editor;
+    setAgentDiagramPath(editor.path);
+    return () => {
+      if (agentDiagramRef.current !== editor) return;
+      agentDiagramRef.current = null;
+      setAgentDiagramPath(null);
+    };
+  }, []);
   const movingRef = useRef(false);
   const deferredEventsRef = useRef(false);
   const followRef = useRef(followEvents);
@@ -92,16 +113,16 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
   }, [openTabs, previewId, activeId, tabsStorageKey, activeStorageKey]);
 
   const isDirty = useCallback((pageId: string): boolean => {
-    const draft = draftsRef.current[pageId];
-    const document = documentsRef.current[pageId];
-    return draft !== undefined && (document === undefined || draft.source !== document.source);
+    return isVaultDraftDirty(draftsRef.current[pageId], documentsRef.current[pageId]);
   }, [documentsRef, draftsRef]);
 
-  const protectsTab = useCallback((pageId: string): boolean => {
+  const hasLocalWork = useCallback((pageId: string): boolean => {
     const draft = draftsRef.current[pageId];
     return isDirty(pageId) || documentWrites.hasPending(pageId)
       || draft?.saving === true || draft?.modalOpen === true || draft?.conflict != null;
   }, [documentWrites, draftsRef, isDirty]);
+  const protectsTab = useCallback((pageId: string): boolean =>
+    isAgentLocked(pageId) || hasLocalWork(pageId), [hasLocalWork, isAgentLocked]);
 
   const keepTab = useCallback((pageId: string): void => {
     setTabs((current) => current.previewId === pageId ? { ...current, previewId: null } : current);
@@ -120,16 +141,22 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     setDrafts((previous) => withoutTabs(previous, ids));
     setFragmentTarget((target) => target && ids.has(target.pageId) ? null : target);
     setFollowTarget((target) => target && ids.has(target.pageId) ? null : target);
-  }, [documentWrites, setDocuments, setDrafts]);
+  }, [documentWrites, setDocuments, setDrafts, setFollowTarget, setFragmentTarget]);
 
   const loadDocument = useCallback(async (pageId: string, discard = false, followEvent?: LiveEvent): Promise<void> => {
-    if (!tabsRef.current.openTabs.includes(pageId)) return;
+    const deferForAgent = (): boolean => {
+      const operation = agentOperationRef.current;
+      if (!operation?.paths.has(pageId)) return false;
+      operation.deferredLoads.add(pageId);
+      return true;
+    };
+    if (!tabsRef.current.openTabs.includes(pageId) || deferForAgent()) return;
     const request = Symbol();
     const draftAtStart = draftsRef.current[pageId];
     loadsRef.current.set(pageId, request);
     try {
       const document = await getVaultDocument(pageId);
-      if (loadsRef.current.get(pageId) !== request) return;
+      if (loadsRef.current.get(pageId) !== request || deferForAgent()) return;
       if (documentWrites.deferLoad(pageId)) return;
       const currentDraft = draftsRef.current[pageId];
       const previousDocument = documentsRef.current[pageId];
@@ -148,7 +175,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
             position = document.spans.find(item => item.blockId === changed?.id)?.from ?? 0;
           }
         }
-        setFollowTarget({ pageId, version: document.version, position });
+        setFollowTarget(() => ({ pageId, version: document.version, position }));
       }
       setDocuments((previous) => ({ ...previous, [pageId]: document }));
       setDrafts((previous) => {
@@ -169,7 +196,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     } finally {
       if (loadsRef.current.get(pageId) === request) loadsRef.current.delete(pageId);
     }
-  }, [documentWrites, documentsRef, draftsRef, patchDraft, protectsTab, setDocuments, setDrafts, tabsRef]);
+  }, [agentOperationRef, documentWrites, documentsRef, draftsRef, patchDraft, protectsTab, setDocuments, setDrafts, setFollowTarget, tabsRef]);
 
   const removeTabs = useCallback((ids: readonly string[], reportBlocked = false): void => {
     const current = tabsRef.current;
@@ -215,21 +242,35 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     if (next.activeId !== null && !documentsRef.current[next.activeId]) void loadDocument(next.activeId);
   };
 
-  const refreshSnapshot = useCallback(async (): Promise<VaultSnapshot | undefined> => {
-    const request = ++snapshotRequestRef.current;
-    const openAtStart = tabsRef.current.openTabs;
-    try {
-      const fresh = await getVaultSnapshot();
-      if (request !== snapshotRequestRef.current) return;
-      updateSnapshot(() => fresh);
-      if (openAtStart === tabsRef.current.openTabs) {
-        const available = new Set(fresh.files.map((file) => file.path));
-        removeTabs(openAtStart.filter((id) => !available.has(id)));
-      }
-      return fresh;
-    } catch (loadError) {
-      if (request === snapshotRequestRef.current) throw loadError;
+  const refreshSnapshot = useCallback((): Promise<VaultSnapshot> => {
+    const refresh = snapshotRefreshRef.current;
+    if (refresh.running !== null) {
+      refresh.pending = true;
+      return refresh.running;
     }
+    const drain = async (): Promise<VaultSnapshot> => {
+      try {
+        for (;;) {
+          refresh.pending = false;
+          const openAtStart = tabsRef.current.openTabs;
+          let fresh: VaultSnapshot;
+          try { fresh = await getVaultSnapshot(); } catch (loadError) {
+            if (refresh.pending) continue;
+            throw loadError;
+          }
+          // Более новый запрос заменит этот снимок. Не закрываем вкладки по устаревшему дереву.
+          if (refresh.pending) continue;
+          updateSnapshot(() => fresh);
+          if (openAtStart === tabsRef.current.openTabs) {
+            const available = new Set(fresh.files.map((file) => file.path));
+            removeTabs(openAtStart.filter((id) => !available.has(id)));
+          }
+          return fresh;
+        }
+      } finally { refresh.running = null; }
+    };
+    refresh.running = drain();
+    return refresh.running;
   }, [removeTabs, tabsRef, updateSnapshot]);
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -256,6 +297,31 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     void activatePage(pageId, fromHistory, followEvent);
   }, [activatePage]);
 
+  const followAgentLocation = async (target: AgentProgressTarget, isCurrent: () => boolean): Promise<void> => {
+    const { path, line } = target;
+    const current = tabsRef.current.activeId;
+    const canNavigate = (): boolean => isCurrent() && !movingRef.current && tabsRef.current.activeId === current
+      && (current === null || !hasLocalWork(current)) && !hasLocalWork(path)
+      && snapshotRef.current.files.some(file => file.path === path);
+    if (!canNavigate()) return;
+    if (!documentsRef.current[path]) {
+      let loaded: VaultDocument;
+      try { loaded = await getVaultDocument(path); }
+      catch (error) {
+        if (!canNavigate() || (error instanceof ApiError && error.status === 404)) return;
+        throw error;
+      }
+      if (!canNavigate()) return;
+      if (!documentsRef.current[path]) {
+        setDocuments(previous => ({ ...previous, [path]: loaded }));
+        setDrafts(previous => ({ ...previous, [path]: freshDraft(loaded) }));
+      }
+    }
+    const document = documentsRef.current[path];
+    void activatePage(path, false);
+    if (line !== undefined && document) setFollowTarget(() => ({ pageId: path, version: document.version, line }));
+  };
+
   const writeDocument = useCallback((pageId: string, draft: VaultDraft, diagram?: DiagramWrite): Promise<VaultDocument> => {
     return documentWrites.put(pageId, { draft, diagram }, {
       draft: () => draftsRef.current[pageId],
@@ -268,11 +334,11 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     });
   }, [documentWrites, draftsRef, loadDocument, patchDraft, setDocuments]);
 
-  const saveDraft = useCallback((pageId: string): Promise<void> => {
+  const saveDraft = useCallback((pageId: string, forAgent = false): Promise<void> => {
     if (movingRef.current || !tabsRef.current.openTabs.includes(pageId)) return Promise.resolve();
     return documentWrites.enqueue(pageId, async () => {
       const draft = draftsRef.current[pageId];
-      if (!draft || draft.conflict || draft.modalOpen) return;
+      if (!draft || draft.conflict || draft.modalOpen || (!forAgent && isAgentLocked(pageId))) return;
       const document = documentsRef.current[pageId];
       if (document && draft.source === document.source) return;
       setBusy(pageId);
@@ -286,7 +352,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
         setBusy(null);
       }
     });
-  }, [documentWrites, documentsRef, draftsRef, patchDraft, refresh, tabsRef, writeDocument]);
+  }, [documentWrites, documentsRef, draftsRef, isAgentLocked, patchDraft, refresh, tabsRef, writeDocument]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -301,7 +367,6 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
   const bootstrap = useCallback(async (): Promise<void> => {
     try {
       const fresh = await refreshSnapshot();
-      if (!fresh) return;
       const initial = tabsRef.current.activeId
         ?? fresh.files.find((file) => file.kind === 'markdown')?.path
         ?? fresh.files[0]?.path;
@@ -336,7 +401,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
       } else {
         const activeId = tabsRef.current.activeId;
         const editing = activeId !== null && protectsTab(activeId);
-        const follow = followRef.current && !editing && event.pageId.toLowerCase().endsWith('.md')
+        const follow = event.origin !== 'agent' && followRef.current && !editing && event.pageId.toLowerCase().endsWith('.md')
           && (event.event === 'page.created' || event.event === 'page.updated' || event.event === 'block.created' || event.event === 'block.updated');
         if (follow) openPage(event.pageId, false, event);
         else if (tabsRef.current.openTabs.includes(event.pageId)) void loadDocument(event.pageId);
@@ -373,6 +438,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
   }, []);
 
   const changeDraft = useCallback((pageId: string, source: string): void => {
+    if (isAgentLocked(pageId)) return;
     const document = documentsRef.current[pageId];
     const draft = draftsRef.current[pageId];
     if (!document || source === (draft?.source ?? document.source)) return;
@@ -381,7 +447,7 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
       const base = draft ?? freshDraft(document);
       return { ...previous, [pageId]: { ...base, source, epoch: base.epoch + 1 } };
     });
-  }, [documentsRef, draftsRef, keepTab, setDrafts]);
+  }, [documentsRef, draftsRef, isAgentLocked, keepTab, setDrafts]);
 
   const discardDraft = useCallback((pageId: string): void => { void loadDocument(pageId, true); }, [loadDocument]);
   const setModalOpen = useCallback((pageId: string, modalOpen: boolean): void => {
@@ -395,6 +461,9 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     if (movingRef.current) throw new Error('Дождитесь завершения перемещения.');
     keepTab(pageId);
     return documentWrites.enqueue(pageId, async () => {
+      if (isAgentLocked(pageId) || write.assets?.some(asset => isAgentLocked(asset.path))) {
+        throw new Error('Дождитесь завершения операции агента.');
+      }
       const draft = draftsRef.current[pageId];
       if (!draft || draft.epoch !== write.draftEpoch || draft.source !== write.draftSource) {
         throw new Error('Документ изменился после открытия диаграммы. Закройте диалог и повторите действие.');
@@ -411,42 +480,126 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
         throw writeError;
       }
     });
-  }, [documentWrites, draftsRef, keepTab, patchDraft, refresh, writeDocument]);
+  }, [documentWrites, draftsRef, isAgentLocked, keepTab, patchDraft, refresh, writeDocument]);
+
+  const beginAgentOperation = (paths: ReadonlySet<string>): AgentOperation => {
+    if (movingRef.current || agentOperationRef.current) throw new Error('Дождитесь завершения текущей операции.');
+    const operation: AgentOperation = { paths, deferredLoads: new Set() };
+    setAgentOperation(() => operation);
+    return operation;
+  };
+
+  const releaseAgentOperation = (operation: AgentOperation | null): void => {
+    if (!operation || agentOperationRef.current !== operation) return;
+    setAgentOperation(() => null);
+    for (const path of operation.deferredLoads) void loadDocument(path);
+  };
+
+  const captureAgentFocus = async (): Promise<AgentFocus> => {
+    const editor = agentDiagramRef.current;
+    const path = editor?.path ?? tabsRef.current.activeId;
+    const paths = new Set(path === null ? [] : [path]);
+    if (editor?.asset) paths.add(editor.asset.path);
+    const operation = beginAgentOperation(paths);
+    try {
+      if (path === null) return { kind: 'folder', folder: selectedFolder };
+      const ensureCurrentDraft = (): VaultDraft => {
+        const draft = draftsRef.current[path];
+        if (!draft) throw new Error('Дождитесь загрузки документа.');
+        if (draft.conflict || draft.externalChange) {
+          throw new Error(draft.conflict ?? `Документ изменился вне редактора: ${path}.`);
+        }
+        return draft;
+      };
+      const initial = ensureCurrentDraft();
+      if (editor) {
+        const { selected, source } = editor.capture();
+        const value = { ...editor.session.value, source: await source };
+        await documentWrites.drain(path);
+        const draft = ensureCurrentDraft();
+        const { target, write } = prepareDiagramWrite(path, draft, editor, value, snapshotRef.current.files.map(file => file.path));
+        if (target.kind === 'asset') paths.add(target.path);
+        operation.diagram = { editor, target };
+        return { kind: 'diagram', path, base: { revision: draft.baseRevision, version: draft.baseVersion },
+          format: value.format, selected, target, overlay: documentWriteBody(draft, write) };
+      }
+      if (initial.modalOpen) throw new Error('Закройте окно выбора схемы перед отправкой.');
+      await saveDraft(path, true);
+      const draft = ensureCurrentDraft();
+      const base = { revision: draft.baseRevision, version: draft.baseVersion };
+      const format = formatForPath(path);
+      return !format || format === 'markdown' ? { kind: 'document', path, base }
+        : { kind: 'diagram', path, base, format, target: { kind: 'file' }, selected: [] };
+    } catch (error) {
+      releaseAgentOperation(operation);
+      throw error;
+    }
+  };
+
+  const guardUndo = async (paths: readonly string[]): Promise<void> => {
+    const changed = new Set(paths);
+    const conflicts = tabsRef.current.openTabs.filter(path => {
+      const assets = documentsRef.current[path]?.assets ?? [];
+      return (changed.has(path) || assets.some(asset => changed.has(asset.path))) && protectsTab(path);
+    });
+    if (conflicts.length) throw new Error(`Нельзя отменить правки: закройте редакторы или сохраните черновики: ${conflicts.join(', ')}.`);
+    // Связанные заметки тоже блокируем до ответа об отмене.
+    for (const path of tabsRef.current.openTabs) {
+      if (documentsRef.current[path]?.assets.some(asset => changed.has(asset.path))) changed.add(path);
+    }
+    beginAgentOperation(changed);
+  };
+
+  const finishAgentTurn = async (changed: readonly string[]): Promise<void> => {
+    const operation = agentOperationRef.current;
+    try {
+      if (!changed.length) return;
+      const paths = new Set(changed);
+      await Promise.all([refresh(), ...tabsRef.current.openTabs.map(async path => {
+        const previous = documentsRef.current[path];
+        const affected = paths.has(path) || previous?.assets.some(asset => paths.has(asset.path))
+          || (operation?.diagram?.editor.path === path && operation.diagram.target.kind === 'asset' && paths.has(operation.diagram.target.path));
+        if (!affected) return;
+        if (!operation?.paths.has(path)) { await loadDocument(path); return; }
+        try {
+          const document = await getVaultDocument(path);
+          if (agentOperationRef.current !== operation || !tabsRef.current.openTabs.includes(path)) return;
+          loadsRef.current.delete(path);
+          setDocuments(current => ({ ...current, [path]: document }));
+          const captured = operation.diagram;
+          const open = captured?.editor.path === path && agentDiagramRef.current === captured.editor;
+          const draft = { ...freshDraft(document), modalOpen: open, epoch: (draftsRef.current[path]?.epoch ?? 0) + 1 };
+          setDrafts(current => ({ ...current, [path]: draft }));
+          if (open) captured.editor.reload(document, draft, captured.target);
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.status !== 404 || operation.diagram?.editor.path === path) throw error;
+          setTabs(current => removeVaultTabs(current, new Set([path])));
+          clearTabData(new Set([path]));
+        }
+      })]);
+    } finally {
+      releaseAgentOperation(operation);
+    }
+  };
 
   const applyMoveResult = useCallback(async (result: VaultMoveResult): Promise<void> => {
-    const remap = (path: string): string => remapPath(path, result.moved);
-    const previousTabs = tabsRef.current.openTabs;
-    const updatedPaths = new Set(result.updatedPaths);
-    const reloadPaths = new Set(updatedPaths);
-    for (const path of previousTabs) {
-      const nextPath = remap(path);
-      if (nextPath === path && !updatedPaths.has(path)) continue;
-      loadsRef.current.delete(path);
-      loadsRef.current.delete(nextPath);
-      documentWrites.forget(path);
-      reloadPaths.add(nextPath);
-    }
-    setTabs(previous => remapVaultTabPaths(previous, remap));
-    setHistory((previous) => ({ ...previous, entries: previous.entries.map(remap) }));
-    setFragmentTarget((target) => target && { ...target, pageId: remap(target.pageId) });
-    setFollowTarget((target) => target && { ...target, pageId: remap(target.pageId) });
-    const previousDocuments = documentsRef.current;
-    setDocuments((previous) => Object.fromEntries(Object.entries(previous).map(([path, document]) => [remap(path),
-      result.document && path === result.moved.find((entry) => entry.to === result.document?.path)?.from ? result.document
-        : { ...document, path: remap(document.path), page: { ...document.page, id: remap(document.page.id) } }])));
-    setDrafts((previous) => Object.fromEntries(Object.entries(previous).map(([path, draft]) => {
-      const nextPath = remap(path);
-      const movedDocument = result.document && nextPath === result.document.path ? result.document : undefined;
-      const document = previousDocuments[path];
-      const dirty = document && draft.source !== document.source;
-      const changed = nextPath !== path || result.updatedPaths.includes(path) || result.updatedPaths.includes(nextPath);
-      if (dirty && changed) return [nextPath, { ...draft, externalChange: true,
-        conflict: 'Файл изменился при перемещении. Черновик сохранён; проверьте ссылки перед сохранением.' }];
-      return [nextPath, movedDocument ? { ...draft, source: movedDocument.source, baseRevision: movedDocument.page.revision, baseVersion: movedDocument.version } : draft];
-    })));
+    const current = {
+      tabs: tabsRef.current, history: historyRef.current, documents: documentsRef.current, drafts: draftsRef.current,
+      fragmentTarget: fragmentTargetRef.current, followTarget: followTargetRef.current
+    };
+    const next = relocateVaultWorkspace(current, result);
+    for (const path of next.invalidatedLoads) loadsRef.current.delete(path);
+    for (const path of next.invalidatedWrites) documentWrites.forget(path);
+    setTabs(() => next.tabs);
+    setHistory(() => next.history);
+    setFragmentTarget(() => next.fragmentTarget);
+    setFollowTarget(() => next.followTarget);
+    setDocuments(() => next.documents);
+    setDrafts(() => next.drafts);
     await refresh();
-    for (const path of reloadPaths) if (!protectsTab(path)) void loadDocument(path);
-  }, [documentWrites, documentsRef, loadDocument, protectsTab, refresh, setDocuments, setDrafts, setHistory, setTabs, tabsRef]);
+    for (const path of next.reloadPaths) if (!protectsTab(path)) void loadDocument(path);
+  }, [documentWrites, documentsRef, draftsRef, followTargetRef, fragmentTargetRef, historyRef, loadDocument, protectsTab,
+    refresh, setDocuments, setDrafts, setFollowTarget, setFragmentTarget, setHistory, setTabs, tabsRef]);
 
   const move = useCallback(async (pageId: string, path: string): Promise<string | null> => {
     const document = documentsRef.current[pageId];
@@ -526,8 +679,10 @@ export function useVaultWorkspace(tokenRequired: boolean, followEvents: boolean,
     selectedFolder, fragmentTarget, followTarget, tokenRequired: getToken() === null,
     openPage, keepTab, closeTab, closeTabs, splitTab, focusPane, closePane, resizePaneSplit, paneLayout: tabs.layout,
     changeDraft, discardDraft, saveDraft, commitDiagram, setModalOpen, isDirty, move,
-    openLinkedPage: (pageId: string, fragment?: string) => { setFragmentTarget(fragment ? { pageId, fragment } : null); openPage(pageId); },
-    clearFragmentTarget: () => setFragmentTarget(null), clearFollowTarget: () => setFollowTarget(null), setSelectedFolder,
+    captureAgentFocus, finishAgentTurn, followAgentLocation, guardUndo, registerAgentDiagram, agentDiagramPath,
+    agentLockedPaths: agentOperation?.paths, isAgentLocked,
+    openLinkedPage: (pageId: string, fragment?: string) => { setFragmentTarget(() => fragment ? { pageId, fragment } : null); openPage(pageId); },
+    clearFragmentTarget: () => setFragmentTarget(() => null), clearFollowTarget: () => setFollowTarget(() => null), setSelectedFolder,
     createDocument, removeDocument, createFolder, moveFolder, removeFolder, search, goBack, goForward, confirmToken,
     refresh, reload: (pageId: string) => loadDocument(pageId),
     clearError: () => setError(null), showError: (value: string) => setError(value)

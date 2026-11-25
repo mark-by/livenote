@@ -4,6 +4,7 @@
  * Все мутации идут через REST API с expectedRevision и подтверждаются перечитыванием
  * страницы (onMutated) — контракт revision-protection.
  */
+import { FieldError, Input, Label, TextArea, TextField } from '@heroui/react';
 import { useEffect, useState } from 'react';
 import type { Block, BlockType, PageFull } from '../../shared/types';
 import { createBlock, deleteBlock, updateBlock, updatePage } from '../api';
@@ -61,6 +62,7 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
   // Переименование заголовка
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const [titleError, setTitleError] = useState<string | null>(null);
 
   // Редактирование существующего блока
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -87,6 +89,7 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
 
   const startRename = (): void => {
     setTitleDraft(page.title);
+    setTitleError(null);
     setEditingTitle(true);
   };
 
@@ -95,13 +98,20 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
       return;
     }
     const clean = titleDraft.trim();
-    setEditingTitle(false);
     if (clean.length === 0 || clean === page.title) {
+      setEditingTitle(false);
       return;
     }
     updatePage(page.id, { title: clean }, page.revision)
-      .then(() => onMutated())
-      .catch((error: unknown) => reportApiError(error));
+      .then(() => {
+        setTitleError(null);
+        setEditingTitle(false);
+        onMutated();
+      })
+      .catch((error: unknown) => {
+        setTitleError(error instanceof Error ? error.message : String(error));
+        if (error instanceof ApiError && error.code === 'conflict') onMutated();
+      });
   };
 
   // --- Редактирование блока ---------------------------------------------------
@@ -263,18 +273,26 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
               saveTitle();
             }}
           >
-            <input
-              className="page__title-input"
+            <TextField
+              fullWidth
+              isInvalid={titleError !== null}
+              name="page-title"
               value={titleDraft}
-              autoFocus
-              onChange={(event) => setTitleDraft(event.target.value)}
-              onBlur={() => saveTitle()}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  setEditingTitle(false);
-                }
-              }}
-            />
+              onChange={setTitleDraft}
+            >
+              <Label>Заголовок страницы</Label>
+              <Input
+                className="page__title-input"
+                autoFocus
+                onBlur={() => saveTitle()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    setEditingTitle(false);
+                  }
+                }}
+              />
+              {titleError !== null && <FieldError>{titleError}</FieldError>}
+            </TextField>
           </form>
         ) : (
           <button type="button" className="page__title page__title--editable" onClick={startRename} title="Переименовать">
@@ -296,7 +314,7 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
             <section key={block.id} className="block" data-block-id={block.id}>
               {isEditing ? (
                 <div className="block-editor">
-                  {renderEditorTextarea(block, editor!.source, (source) => setEditor({ ...editor!, source }))}
+                  {renderEditorTextarea(block, editor!.source, (source) => setEditor({ ...editor!, source }), saveError)}
                   <div className="block-editor__bar">
                     <button className="btn btn--primary" type="button" onClick={saveEdit}>
                       Сохранить
@@ -306,7 +324,6 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
                     </button>
                     {renderHint(block.type)}
                   </div>
-                  {saveError !== null && <div className="block-editor__error">{saveError}</div>}
                 </div>
               ) : (
                 <>
@@ -353,7 +370,8 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
               {renderEditorTextarea(
                 { id: 'draft', type: draft.type, pageId: page.id, position: lastPosition + 1 },
                 draft.source,
-                (source) => setDraft({ ...draft, source })
+                (source) => setDraft({ ...draft, source }),
+                saveError
               )}
               <div className="block-editor__bar">
                 <button className="btn btn--primary" type="button" onClick={saveDraft}>
@@ -364,7 +382,6 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
                 </button>
                 {renderHint(draft.type)}
               </div>
-              {saveError !== null && <div className="block-editor__error">{saveError}</div>}
             </div>
           </section>
         ) : (
@@ -429,25 +446,34 @@ export function PageView({ page, onMutated, onError, focusBlock = null }: PageVi
 function renderEditorTextarea(
   block: { id: string; type: BlockType; pageId: string; position: number },
   value: string,
-  onChange: (value: string) => void
+  onChange: (value: string) => void,
+  error: string | null
 ): React.JSX.Element {
   return (
-    <textarea
-      className="block-editor__textarea"
+    <TextField
+      fullWidth
+      isInvalid={error !== null}
+      name={`block-source-${block.id}`}
       value={value}
-      spellCheck={false}
-      autoFocus
-      placeholder={
-        block.type === 'mermaid'
-          ? 'Пример: graph TD\n  A --> B'
-          : block.type === 'bpmn'
-            ? 'Вставьте XML-код BPMN-схемы…'
-            : block.type === 'drawio'
-              ? 'Вставьте XML-код draw.io…'
-              : 'Введите Markdown…'
-      }
-      onChange={(event) => onChange(event.target.value)}
-    />
+      onChange={onChange}
+    >
+      <Label>{`Исходник блока ${block.type}`}</Label>
+      <TextArea
+        className="block-editor__textarea"
+        spellCheck={false}
+        autoFocus
+        placeholder={
+          block.type === 'mermaid'
+            ? 'Пример: graph TD\n  A --> B'
+            : block.type === 'bpmn'
+              ? 'Вставьте XML-код BPMN-схемы…'
+              : block.type === 'drawio'
+                ? 'Вставьте XML-код draw.io…'
+                : 'Введите Markdown…'
+        }
+      />
+      {error !== null && <FieldError>{error}</FieldError>}
+    </TextField>
   );
 }
 

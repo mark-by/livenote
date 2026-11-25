@@ -1,11 +1,13 @@
 //! Сценарии работы с хранилищем для HTTP и MCP.
 
+pub mod agent_documents;
 mod archive;
 mod args;
 mod assets;
 mod block;
 mod block_edit;
 mod diagram;
+mod diagram_attachment;
 mod document;
 mod edit;
 mod error;
@@ -26,6 +28,7 @@ mod writes;
 use serde::Serialize;
 use serde_json::Value;
 
+pub use block::BlockResult;
 pub use error::ApiError;
 pub use events::Subscription;
 pub use service::Service;

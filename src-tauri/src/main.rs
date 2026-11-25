@@ -1,3 +1,6 @@
+mod agent;
+pub mod agent_bindings;
+pub mod agent_connections;
 mod chromium;
 mod http;
 mod server;

@@ -15,7 +15,7 @@ use crate::{
     transaction::{Change, Plan},
 };
 
-fn fold(path: &str) -> String {
+pub(crate) fn fold(path: &str) -> String {
     path.nfc()
         .flat_map(char::to_lowercase)
         .map(|ch| if ch == 'ς' { 'σ' } else { ch })
@@ -60,12 +60,24 @@ impl State {
     }
 
     pub(crate) fn unique(&self, base: &str, ext: &str) -> Result<String, ApiError> {
+        self.unique_with(base, ext, |_| false)
+    }
+
+    pub(crate) fn unique_with(
+        &self,
+        base: &str,
+        ext: &str,
+        reserved: impl Fn(&str) -> bool,
+    ) -> Result<String, ApiError> {
         for index in 1..=u32::MAX {
             let path = if index == 1 {
                 format!("{base}.{ext}")
             } else {
                 format!("{base} {index}.{ext}")
             };
+            if reserved(&path) {
+                continue;
+            }
             match self.destination(&path, None) {
                 Ok(()) if self.files.read_optional(&path)?.is_none() => return Ok(path),
                 Ok(()) => (),

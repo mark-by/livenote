@@ -127,6 +127,7 @@ impl VaultFiles {
             changes,
             directories,
             rename: rename.cloned(),
+            preserve_staged: false,
         };
         journal.validate()?;
         self.validate_directories(&journal)?;

@@ -82,7 +82,9 @@ pub(crate) fn parse(source: &str, path: &str) -> Result<Syntax, DocumentProblem>
         };
         match node {
             Node::Definition(def) => {
-                definitions.insert(def.identifier.as_str(), (def.url.as_str(), range));
+                definitions
+                    .entry(def.identifier.as_str())
+                    .or_insert((def.url.as_str(), range));
             }
             Node::Code(code) => {
                 if code.lang.as_deref() == Some("mermaid")

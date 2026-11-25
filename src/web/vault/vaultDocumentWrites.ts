@@ -20,6 +20,16 @@ export interface DiagramWrite {
   readonly references?: WriteVaultDocumentBody['references'];
 }
 
+export function documentWriteBody(draft: VaultDraft, diagram?: DiagramWrite): Omit<WriteVaultDocumentBody, 'requestId'> {
+  return {
+    expectedRevision: draft.baseRevision,
+    expectedVersion: draft.baseVersion,
+    source: diagram?.source ?? draft.source,
+    ...(diagram?.assets ? { assets: diagram.assets } : {}),
+    ...(diagram?.references ? { references: diagram.references } : {})
+  };
+}
+
 export const TEXT_WRITE_CONFLICT =
   'Документ изменился вне этого редактора. Автосохранение остановлено; черновик и история редактирования сохранены.';
 
@@ -42,6 +52,10 @@ export class VaultDocumentWrites {
 
   hasPending(pageId: string): boolean {
     return this.queues.has(pageId);
+  }
+
+  async drain(pageId: string): Promise<void> {
+    while (this.queues.has(pageId)) await this.queues.get(pageId);
   }
 
   forget(pageId: string): void {
@@ -86,13 +100,7 @@ export class VaultDocumentWrites {
     const { draft, diagram } = request;
     let saved: VaultDocument;
     try {
-      saved = await putVaultDocument(pageId, {
-        expectedRevision: draft.baseRevision,
-        expectedVersion: draft.baseVersion,
-        source: diagram?.source ?? draft.source,
-        ...(diagram?.assets ? { assets: diagram.assets } : {}),
-        ...(diagram?.references ? { references: diagram.references } : {})
-      });
+      saved = await putVaultDocument(pageId, documentWriteBody(draft, diagram));
     } catch (error) {
       state.patchDraft({ saving: false, ...(pending.revision !== undefined ? { externalChange: true } : {}) });
       throw error;

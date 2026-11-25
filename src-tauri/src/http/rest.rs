@@ -8,10 +8,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{MethodFilter, on},
 };
-use livenote_vault_service::{Output, Scope};
+use livenote_vault_service::{ApiError, BlockResult, Output, Scope};
 use serde_json::{Map, Value};
 
 use super::{HttpState, api_error, bad_request, closing, security::reject};
+
+#[cfg(test)]
+#[path = "rest_r5_tests.rs"]
+mod r5_tests;
 
 #[derive(Clone, Copy)]
 enum Envelope {
@@ -199,12 +203,20 @@ async fn dispatch(
         },
         operation => operation,
     };
+    if matches!(endpoint.envelope, Envelope::Block) {
+        let result = state
+            .service
+            .call_block(operation, Value::Object(args), scope)
+            .await;
+        return reply_block(result);
+    }
+
     match state
         .service
         .call(operation, Value::Object(args), scope)
         .await
     {
-        Ok(output) => reply(&state, endpoint.envelope, &params, output).await,
+        Ok(output) => reply(endpoint.envelope, &params, output),
         Err(error) => api_error(error),
     }
 }
@@ -289,12 +301,14 @@ fn arguments(
     Some(args)
 }
 
-async fn reply(
-    state: &HttpState,
-    envelope: Envelope,
-    params: &BTreeMap<String, String>,
-    output: Output,
-) -> Response {
+fn reply_block(result: Result<BlockResult, ApiError>) -> Response {
+    match result {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => api_error(error),
+    }
+}
+
+fn reply(envelope: Envelope, params: &BTreeMap<String, String>, output: Output) -> Response {
     use serde_json::json;
     match output {
         Output::Empty => StatusCode::NO_CONTENT.into_response(),
@@ -323,30 +337,7 @@ async fn reply(
         Output::Json(value) => match envelope {
             Envelope::Bare => Json(value).into_response(),
             Envelope::Named(key) => Json(json!({ (key): value })).into_response(),
-            Envelope::Block => {
-                let Some(id) = params.get("page_id") else {
-                    return internal();
-                };
-                let scope = params
-                    .get("vault_id")
-                    .map_or(Scope::Default, |id| Scope::Vault(id));
-                match state
-                    .service
-                    .call("get_page", json!({ "page_id": id }), scope)
-                    .await
-                {
-                    Ok(Output::Json(page)) => {
-                        let mut body = json!({ "page": page });
-                        if let Some(validation) = value.get("validation") {
-                            body["validation"] = validation.clone();
-                        }
-                        Json(body).into_response()
-                    }
-                    Ok(Output::Bytes(_) | Output::Empty) => internal(),
-                    Err(error) => api_error(error),
-                }
-            }
-            Envelope::Png | Envelope::Markdown | Envelope::Zip => internal(),
+            Envelope::Block | Envelope::Png | Envelope::Markdown | Envelope::Zip => internal(),
         },
     }
 }

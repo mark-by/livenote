@@ -1,16 +1,50 @@
 use livenote_diagrams::{DiagramValidation, ValidationStatus};
-use serde_json::{Value, json};
-use vault_read::BlockType;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use vault_read::{BlockType, PageFull};
 
 use crate::{
     ApiError,
     args::{Expected, Layout, WriteBlock},
     block_edit::Edit,
-    diagram::{Validator, format, invalid, result},
+    diagram::{Validator, format, invalid},
     events::{event, publish},
     state::State,
     transaction::ReceiptKey,
 };
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BlockSummary {
+    pub(crate) page_id: String,
+    pub(crate) block_id: String,
+    pub(crate) revision: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) validation: Option<DiagramValidation>,
+}
+
+/// Страница и результат проверки из одной операции с блоком.
+#[derive(Debug, Serialize)]
+pub struct BlockResult {
+    pub page: PageFull,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<DiagramValidation>,
+}
+
+impl BlockResult {
+    pub(crate) fn from_summary(state: &State, summary: BlockSummary) -> Result<Self, ApiError> {
+        // Квитанция хранит ревизию, но не страницу. Не подставляем более новую страницу.
+        let expected = Expected {
+            expected_revision: summary.revision,
+            expected_version: None,
+        };
+        let document = state.check(&summary.page_id, &expected)?.document();
+        Ok(Self {
+            page: state.render_fields(document).page,
+            validation: summary.validation,
+        })
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -104,7 +138,10 @@ impl State {
         Ok(BlockWrite { body, kind, mode })
     }
 
-    pub(crate) fn finish_block(&mut self, publication: Publication) -> Result<Value, ApiError> {
+    pub(crate) fn finish_block(
+        &mut self,
+        publication: Publication,
+    ) -> Result<BlockSummary, ApiError> {
         let Publication {
             path,
             expected,
@@ -114,7 +151,7 @@ impl State {
             receipt,
         } = publication;
         if let Some(replay) = self.replay(receipt.as_ref())? {
-            return Ok(replay);
+            return Ok(serde_json::from_value(replay)?);
         }
         let previous = self.check(&path, &expected)?;
         let Edit {
@@ -127,19 +164,25 @@ impl State {
             let next = self.preview(&path, &plan)?;
             self.collect_unused(&mut plan, previous.document(), Some(next.document()))?;
         }
-        let response = result(&path, &id, revision, validation.as_ref());
+        let response = BlockSummary {
+            page_id: path,
+            block_id: id,
+            revision,
+            validation,
+        };
         if let Some(key) = receipt.as_ref() {
-            self.persist_receipt(&mut plan, (key, &response))?;
+            self.persist_receipt(&mut plan, (key, &serde_json::to_value(&response)?))?;
         }
+        let path = &response.page_id;
         let before = self.revisions();
-        if self.commit(&plan, &path)? && before.get(&path) != Some(&revision) {
+        if self.commit(&plan, path)? && before.get(path) != Some(&revision) {
             let kind = if prior_id.is_some() {
                 "block.updated"
             } else {
                 "block.created"
             };
-            self.block_event(kind, &path, &id, revision);
-            self.related(&before, &path);
+            self.block_event(kind, path, &response.block_id, revision);
+            self.related(&before, path);
         }
         Ok(response)
     }

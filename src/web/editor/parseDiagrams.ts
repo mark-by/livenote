@@ -31,14 +31,14 @@ export function parseEditorDiagrams(doc: Text | string): readonly EditorDiagram[
 }
 
 function collectDiagrams(doc: Text | string): readonly EditorDiagram[] {
-  const { source, nodes, definitions } = markdownDocument(doc);
+  const { slice, nodes, definitions, wikiEmbeds } = markdownDocument(doc);
   const diagrams: EditorDiagram[] = [];
   const excluded: SourceRange[] = [];
   for (const { node, from, to } of nodes) {
     switch (node.type) {
       case 'code': {
         excluded.push({ from, to });
-        const raw = source.slice(from, to);
+        const raw = slice(from, to);
         const opening = /^ {0,3}(`{3,}|~{3,})mermaid[^\r\n]*(?:\r?\n)/.exec(raw);
         if (node.lang !== 'mermaid' || !opening) break;
         const fence = opening[1] ?? '';
@@ -62,13 +62,9 @@ function collectDiagrams(doc: Text | string): readonly EditorDiagram[] {
       }
     }
   }
-  for (const match of source.matchAll(/!\[\[([^\]\r\n]+)\]\]/g)) {
-    const from = match.index;
-    const to = from + match[0].length;
-    let slash = from;
-    while (slash > 0 && source[slash - 1] === '\\') slash--;
-    if ((from - slash) % 2 || excluded.some(range => from < range.to && to > range.from)) continue;
-    const [target = '', label] = (match[1] ?? '').split('|', 2);
+  for (const { from, to, value } of wikiEmbeds) {
+    if (excluded.some(range => from < range.to && to > range.from)) continue;
+    const [target = '', label] = value.split('|', 2);
     const format = externalDiagram(target);
     if (format) diagrams.push({
       from, to, format, source: '', target,

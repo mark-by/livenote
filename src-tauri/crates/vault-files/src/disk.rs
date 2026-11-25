@@ -8,8 +8,8 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{
-    AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, Stat, fstat, fsync, mkdirat, open, openat,
-    renameat, renameat_with, statat, unlinkat,
+    AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, Stat, fstat, fsync, linkat, mkdirat, open,
+    openat, renameat, renameat_with, statat, unlinkat,
 };
 use rustix::io::Errno;
 
@@ -26,6 +26,26 @@ const FILE_MODE: Mode = Mode::from_bits_truncate(0o600);
 pub struct Disk {
     root: PathBuf,
     fd: OwnedFd,
+}
+
+#[must_use = "Подтвердите изменение каталога через sync"]
+pub(crate) struct Applied<'a> {
+    path: &'a RelativePath,
+    parent: OwnedFd,
+    source_parent: Option<OwnedFd>,
+}
+
+impl Applied<'_> {
+    pub(crate) fn sync(self) -> Result<(), Error> {
+        let label = self.path.as_str();
+        #[cfg(test)]
+        crate::transaction_tests::fail_sync(label)?;
+        fsync(&self.parent).map_err(|error| Error::errno(label, error))?;
+        if let Some(source) = self.source_parent {
+            fsync(source).map_err(|error| Error::errno(label, error))?;
+        }
+        Ok(())
+    }
 }
 
 fn directory_at(fd: impl AsFd, name: &OsStr, label: &str) -> Result<OwnedFd, Error> {
@@ -158,11 +178,15 @@ impl Disk {
         Ok(())
     }
 
-    pub(crate) fn mkdir(&self, path: &RelativePath) -> Result<(), Error> {
+    pub(crate) fn mkdir<'a>(&self, path: &'a RelativePath) -> Result<Applied<'a>, Error> {
         let parent = self.dir(path.parent())?;
         mkdirat(&parent, path.name(), DIRECTORY_MODE)
             .map_err(|source| Error::errno(path.as_str(), source))?;
-        fsync(&parent).map_err(|source| Error::errno(path.as_str(), source))
+        Ok(Applied {
+            path,
+            parent,
+            source_parent: None,
+        })
     }
 
     pub(crate) fn write_exclusive(&self, path: &RelativePath, bytes: &[u8]) -> Result<(), Error> {
@@ -179,12 +203,12 @@ impl Disk {
         fsync(&parent).map_err(|source| Error::errno(label, source))
     }
 
-    pub(crate) fn rename(
+    pub(crate) fn rename<'a>(
         &self,
         from: &RelativePath,
-        to: &RelativePath,
+        to: &'a RelativePath,
         flags: RenameFlags,
-    ) -> Result<(), Error> {
+    ) -> Result<Applied<'a>, Error> {
         let source = self.dir(from.parent())?;
         let destination = self.dir(to.parent())?;
         if flags.is_empty() {
@@ -193,15 +217,37 @@ impl Disk {
             renameat_with(&source, from.name(), &destination, to.name(), flags)
         }
         .map_err(|error| Error::errno(to.as_str(), error))?;
-        fsync(&destination)
-            .and_then(|()| fsync(&source))
-            .map_err(|error| Error::errno(to.as_str(), error))
+        Ok(Applied {
+            path: to,
+            parent: destination,
+            source_parent: Some(source),
+        })
     }
 
-    pub(crate) fn unlink(&self, path: &RelativePath, flags: AtFlags) -> Result<(), Error> {
+    pub(crate) fn link(&self, from: &RelativePath, to: &RelativePath) -> Result<(), Error> {
+        let parent = self.dir(from.parent())?;
+        linkat(&parent, from.name(), &parent, to.name(), AtFlags::empty())
+            .map_err(|source| Error::errno(to.as_str(), source))
+    }
+
+    pub(crate) fn sync_parent(&self, path: &RelativePath) -> Result<(), Error> {
+        fsync(self.dir(path.parent())?).map_err(|source| Error::errno(path.as_str(), source))
+    }
+
+    pub(crate) fn unlink<'a>(
+        &self,
+        path: &'a RelativePath,
+        flags: AtFlags,
+    ) -> Result<Applied<'a>, Error> {
         let parent = self.dir(path.parent())?;
+        #[cfg(test)]
+        crate::transaction_tests::fail_unlink(path.as_str())?;
         unlinkat(&parent, path.name(), flags)
             .map_err(|error| Error::errno(path.as_str(), error))?;
-        fsync(&parent).map_err(|error| Error::errno(path.as_str(), error))
+        Ok(Applied {
+            path,
+            parent,
+            source_parent: None,
+        })
     }
 }

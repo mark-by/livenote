@@ -1,17 +1,18 @@
 use rustix::fs::FileType;
 
 use crate::disk::file_type;
-use crate::journal::{Journal, TRANSACTIONS};
+use crate::journal::{FinishedJournal, Journal, TRANSACTIONS};
 use crate::publication::{Mode, Publication};
 use crate::{
-    DirectoryChange, FileWrite, PathRename, RelativePath, VaultFileError as Error,
+    DirectoryChange, FileWrite, PathRename, RelativePath, StagedTimes, VaultFileError as Error,
     VaultFileProblem, VaultFileProblemCode, VaultFiles,
 };
 
 impl VaultFiles {
     /// Публикует файлы, каталоги и переименование через совместимый журнал.
     ///
-    /// Возвращает `false`, если запрос не меняет состояние.
+    /// Возвращает `false`, если запрос не меняет состояние. Ошибка уборки
+    /// подтверждённого журнала не меняет результат записи.
     ///
     /// # Errors
     /// Возвращает ошибку пути, конфликт ожидаемых байтов или сбой публикации.
@@ -27,19 +28,81 @@ impl VaultFiles {
             return Ok(false);
         }
         journal.persist(&self.disk)?;
-        let mut publication = Publication::new(&self.disk, &journal);
+        self.publish(&journal)?;
+        Ok(true)
+    }
+
+    /// Готовит записи файлов, формирует квитанцию по их временам и публикует всё одним журналом.
+    ///
+    /// # Errors
+    /// Внешний результат содержит ошибку файловой операции. Внутренний содержит
+    /// ошибку формирования квитанции до публикации.
+    pub fn commit_with_receipt<T, E>(
+        &mut self,
+        writes: &[FileWrite<'_>],
+        receipt_path: &RelativePath,
+        build: impl FnOnce(&Self, &[StagedTimes<'_>]) -> Result<(Vec<u8>, T), E>,
+    ) -> Result<Result<T, E>, Error> {
+        self.disk.check_root()?;
+        if !receipt_path.as_str().starts_with(".livenote/requests/")
+            || writes.iter().any(|write| write.path.operational_write())
+        {
+            return Err(Error::invalid(receipt_path.as_str()));
+        }
+        let mut journal = self.plan(writes, &[], None)?;
+        let stage = journal.stage(&self.disk)?;
+        let previous = self.disk.read_optional(receipt_path)?;
+        let (bytes, response) = match build(self, &stage.times(&journal)?) {
+            Ok(pair) => pair,
+            Err(error) => return Ok(Err(error)),
+        };
+        let receipt = FileWrite {
+            path: receipt_path.clone(),
+            source: Some(&bytes),
+            expected: previous.as_ref().map(|file| file.bytes.as_slice()),
+        };
+        let extra = self.plan(&[receipt], &[], None)?;
+        let start = journal.changes.len();
+        journal.changes.extend(extra.changes);
+        journal.directories.extend(extra.directories);
+        if journal.paths().next().is_none() {
+            return Ok(Ok(response));
+        }
+        journal.preserve_staged = true;
+        journal.validate()?;
+        stage.write_changes(&journal, start)?;
+        stage.activate(&journal)?;
+        self.publish(&journal)?;
+        Ok(Ok(response))
+    }
+
+    fn publish(&mut self, journal: &Journal) -> Result<(), Error> {
+        let mut publication = Publication::new(&self.disk, journal);
         if let Err(source) = publication.apply(Mode::Commit) {
             let rollback = publication.rollback().err().map(Box::new);
-            self.quarantine(&journal);
-            return Err(Error::TransactionIncomplete {
-                id: journal.id.clone(),
-                paths: journal.paths().map(|path| path.as_str().into()).collect(),
-                source: Box::new(source),
-                rollback,
-            });
+            return Err(self.incomplete(journal, source, rollback));
         }
-        journal.retire(&self.disk)?;
-        Ok(true)
+        let finished = journal.confirm(&self.disk).map_err(|source| {
+            // Журнал уже мог сменить имя. Не откатываем опубликованные файлы.
+            self.incomplete(journal, source, None)
+        })?;
+        finished.cleanup(&self.disk);
+        Ok(())
+    }
+
+    fn incomplete(
+        &mut self,
+        journal: &Journal,
+        source: Error,
+        rollback: Option<Box<Error>>,
+    ) -> Error {
+        self.quarantine(journal);
+        Error::TransactionIncomplete {
+            id: journal.id.clone(),
+            paths: journal.paths().map(|path| path.as_str().into()).collect(),
+            source: Box::new(source),
+            rollback,
+        }
     }
 
     pub(crate) fn reject_quarantined<'a>(
@@ -75,6 +138,9 @@ impl VaultFiles {
     }
 
     pub(crate) fn recover(&mut self) -> Result<(), Error> {
+        if let Err(error) = FinishedJournal::retry_all(&self.disk) {
+            eprintln!("Не удалось повторить уборку завершённых транзакций: {error}");
+        }
         let entries = match self.disk.entries(TRANSACTIONS) {
             Ok(entries) => entries,
             Err(error) if error.missing() => return Ok(()),
@@ -113,7 +179,7 @@ impl VaultFiles {
                 self.quarantine(&journal);
                 continue;
             }
-            journal.retire(&self.disk)?;
+            journal.confirm(&self.disk)?.cleanup(&self.disk);
         }
         Ok(())
     }

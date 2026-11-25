@@ -8,9 +8,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use livenote_diagrams::{DiagramEngine, MermaidTheme};
 use livenote_vault_service::Service;
-use tauri::AppHandle;
-#[cfg(not(debug_assertions))]
-use tauri::Manager;
+use tauri::{AppHandle, Manager};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -78,19 +76,37 @@ pub(super) async fn run(
         return Ok(());
     }
 
-    let state =
-        super::http::HttpState::new(service, app.clone(), shutdown.clone(), PORT, token, theme);
+    let data_dir = app.path().app_local_data_dir()?;
+    let home_dir = app.path().home_dir()?;
+    let connections =
+        super::agent_connections::Connections::new(data_dir.clone(), home_dir, PORT)?;
+    let agent = super::agent::AgentRuntime::new(data_dir, connections, shutdown.clone());
+    let state = super::http::HttpState::new(
+        service,
+        app.clone(),
+        shutdown.clone(),
+        PORT,
+        token,
+        theme,
+        agent.clone(),
+    );
     let router = super::http::router(state, &web_root);
     let serving = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown.clone().cancelled_owned())
         .into_future();
     tokio::pin!(serving);
     tokio::select! {
-        result = &mut serving => return result.context("Ошибка HTTP-сервера LiveNote"),
+        result = &mut serving => {
+            shutdown.cancel();
+            agent.drain().await;
+            return result.context("Ошибка HTTP-сервера LiveNote");
+        },
         window = super::window::open(app, shutdown) => {
             if let Err(error) = window {
                 shutdown.cancel();
-                serving.await.context("Не удалось остановить HTTP-сервер LiveNote")?;
+                let stopped = serving.await;
+                agent.drain().await;
+                stopped.context("Не удалось остановить HTTP-сервер LiveNote")?;
                 return Err(error);
             }
         }
@@ -98,5 +114,8 @@ pub(super) async fn run(
     if !shutdown.is_cancelled() {
         println!("LiveNote: http://{address}/ (MCP: /mcp)");
     }
-    serving.await.context("Ошибка HTTP-сервера LiveNote")
+    let stopped = serving.await;
+    shutdown.cancel();
+    agent.drain().await;
+    stopped.context("Ошибка HTTP-сервера LiveNote")
 }

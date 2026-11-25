@@ -1,8 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    DocumentInput, FileFailure, ParsedDocument, ProblemCode, SearchError, VaultIndex, VaultProblem,
-    VaultReadSource, VaultSearchHit, VaultSnapshot,
+    DocumentInput, FileFailure, FileTimes, ParsedDocument, ProblemCode, SearchError, VaultIndex,
+    VaultProblem, VaultReadSource, VaultSearchHit, VaultSnapshot,
     links::populate,
     observations::{Observation, Observations, ScannedTree, StagedFile, VaultScan},
     openable,
@@ -90,7 +90,7 @@ impl VaultProjection {
 
     /// Применяет подтверждённый результат сканирования, затем обновляет кэш.
     pub fn reconcile(&mut self, scan: VaultScan<'_>, files: &impl VaultReadSource) {
-        let records = self.project(scan, files, &[]);
+        let records = self.project(scan, files, &[], |_| FileTimes::default());
         if let Some(index) = &mut self.index {
             let visible_records = self
                 .paths
@@ -114,7 +114,18 @@ impl VaultProjection {
         files: &impl VaultReadSource,
         staged: &[StagedFile<'_>],
     ) {
-        self.project(scan, files, staged);
+        self.reconcile_staged_with_times(scan, files, staged, |_| FileTimes::default());
+    }
+
+    /// Показывает подготовленные изменения с фактическими временами файлов.
+    pub fn reconcile_staged_with_times(
+        &mut self,
+        scan: VaultScan<'_>,
+        files: &impl VaultReadSource,
+        staged: &[StagedFile<'_>],
+        times: impl Fn(&str) -> FileTimes,
+    ) {
+        self.project(scan, files, staged, times);
     }
 
     fn project(
@@ -122,6 +133,7 @@ impl VaultProjection {
         scan: VaultScan<'_>,
         files: &impl VaultReadSource,
         staged: &[StagedFile<'_>],
+        times: impl Fn(&str) -> FileTimes,
     ) -> Records {
         let mut observations = Observations::new(scan, files, &self.records);
         let ScannedTree {
@@ -129,7 +141,7 @@ impl VaultProjection {
             folders,
             mut problems,
             version,
-        } = observations.scan(scan, staged);
+        } = observations.scan(scan, staged, times);
         self.tree_version = version;
         self.folders = folders;
         let mut entries = HashMap::new();

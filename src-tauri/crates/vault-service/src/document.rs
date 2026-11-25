@@ -196,28 +196,31 @@ impl State {
             .map(|expected| self.check(path, expected))
             .transpose()?;
         let before = self.revisions();
-        let (response, creating) = {
+        if let Some(old) = previous {
             let preview = self.preview(path, &candidate.plan)?;
-            if let Some(old) = previous {
-                self.collect_unused(
-                    &mut candidate.plan,
-                    old.document(),
-                    Some(preview.document()),
-                )?;
-            }
-            let creating = candidate.expected.is_none();
-            let document = self.render_fields(preview.document());
-            let response = if creating {
-                serde_json::to_value(document.page)?
-            } else {
-                serde_json::to_value(document)?
-            };
-            (response, creating)
-        };
-        if let Some(key) = receipt {
-            self.persist_receipt(&mut candidate.plan, (key, &response))?;
+            self.collect_unused(
+                &mut candidate.plan,
+                old.document(),
+                Some(preview.document()),
+            )?;
+        } else if receipt.is_none() {
+            self.preview(path, &candidate.plan)?;
         }
-        self.commit(&candidate.plan, path)?;
+        let creating = candidate.expected.is_none();
+        let response = if let Some(key) = receipt {
+            Some(
+                self.commit_document_receipt(&candidate.plan, path, key, |document| {
+                    Ok(if creating {
+                        serde_json::to_value(document.page)?
+                    } else {
+                        serde_json::to_value(document)?
+                    })
+                })?,
+            )
+        } else {
+            self.commit(&candidate.plan, path)?;
+            None
+        };
         let document = self.render_fields(self.require(path)?.document());
         if before.get(path) != Some(&document.page.revision) {
             self.emit(
@@ -231,7 +234,7 @@ impl State {
             );
         }
         self.related(&before, path);
-        if receipt.is_some() {
+        if let Some(response) = response {
             Ok(response)
         } else if creating {
             Ok(serde_json::to_value(document.page)?)

@@ -7,6 +7,7 @@ import type { Root } from 'react-dom/client';
 import { getThemeVersion } from '../mermaidInit';
 import type { DiagramRenderer, EditorDiagram } from './types';
 import { parseEditorDiagrams } from './parseDiagrams';
+import { reuseMarkdownDocument } from './markdownNodes';
 
 export const diagramRenderer = Facet.define<DiagramRenderer, DiagramRenderer | undefined>({
   combine: values => values[0]
@@ -159,9 +160,10 @@ function diagramDecorations(state: EditorState, previous = Decoration.none) {
 export const diagramField = StateField.define<DecorationSet>({
   create: diagramDecorations,
   update(value, transaction) {
-    return transaction.docChanged ||
-      transaction.startState.facet(diagramRenderer) !== transaction.state.facet(diagramRenderer)
-      ? diagramDecorations(transaction.state, value.map(transaction.changes)) : value;
+    if (!transaction.docChanged &&
+      transaction.startState.facet(diagramRenderer) === transaction.state.facet(diagramRenderer)) return value;
+    reuseMarkdownDocument(transaction);
+    return diagramDecorations(transaction.state, value.map(transaction.changes));
   },
   provide: field => [
     EditorView.decorations.from(field),
@@ -172,6 +174,7 @@ export const diagramField = StateField.define<DecorationSet>({
 // Vim задаёт selection напрямую, минуя atomicRanges. Ни один endpoint не входит в скрытый исходник.
 export const diagramSelection = EditorState.transactionFilter.of(transaction => {
   if (!transaction.selection || !transaction.startState.facet(diagramRenderer)) return transaction;
+  reuseMarkdownDocument(transaction);
   const diagrams = parseEditorDiagrams(transaction.newDoc);
   const previous = transaction.startState.selection.main;
   const snap = (position: number, before: number) => {

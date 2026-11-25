@@ -85,18 +85,22 @@ export function mermaidFence(source: string): string {
   return `${fence}mermaid\n${source.replace(/\n$/, '')}\n${fence}`;
 }
 
+function blockInsertionPosition(source: string, position: number): number {
+  const bounded = Math.max(0, Math.min(source.length, position));
+  const lineEndIndex = source.indexOf('\n', bounded);
+  const lineEnd = lineEndIndex < 0 ? source.length : lineEndIndex;
+  if (bounded === lineEnd) return bounded;
+  const lineStart = source.lastIndexOf('\n', bounded) + 1;
+  return source.slice(lineStart, lineEnd).trim() ? lineStart : bounded;
+}
+
 export function insertBlockAt(source: string, position: number, block: string): {
   source: string;
   from: number;
   to: number;
   edit: { from: number; to: number; text: string };
 } {
-  const bounded = Math.max(0, Math.min(source.length, position));
-  const lineStart = source.lastIndexOf('\n', Math.max(0, bounded - 1)) + 1;
-  const lineEndIndex = source.indexOf('\n', bounded);
-  const lineEnd = lineEndIndex < 0 ? source.length : lineEndIndex;
-  const insideProse = source.slice(lineStart, lineEnd).trim().length > 0 && bounded !== lineStart;
-  const from = insideProse ? lineStart : bounded;
+  const from = blockInsertionPosition(source, position);
   const before = source.slice(0, from);
   const after = source.slice(from);
   const prefix = before.length === 0 ? '' : before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';

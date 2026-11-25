@@ -1,6 +1,6 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use livenote_diagrams::DiagramEngine;
@@ -8,10 +8,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::{
-    ApiError, Output, Scope, Subscription, args,
+    ApiError, BlockResult, Output, Scope, Subscription,
+    agent_documents::VaultRef,
+    args,
     diagram::Validator,
     operations::immediate,
-    registry::{Entry, Registry, blocking, canonicalize, open_selected, select, watch},
+    registry::{Entry, Registry, blocking, canonicalize, watch},
     state::State,
 };
 
@@ -20,7 +22,7 @@ pub struct Service {
     startup: String,
     registry: Arc<Registry>,
     watcher: tokio::task::AbortHandle,
-    pub(crate) validator: Validator,
+    pub(crate) validator: Arc<Validator>,
 }
 
 impl Service {
@@ -37,16 +39,16 @@ impl Service {
         let path = startup.to_owned();
         let entry = blocking(move || Entry::open(canonicalize(&path, true)?, true)).await?;
         let startup = entry.id.clone();
-        let registry = Arc::new(Mutex::new(vec![Arc::new(entry)]));
+        let registry = Arc::new(Registry::new(entry));
         let watcher = watch(&registry);
         Ok(Self {
             startup,
             registry,
             watcher,
-            validator: Validator {
+            validator: Arc::new(Validator {
                 engine: diagrams,
                 theme,
-            },
+            }),
         })
     }
 
@@ -55,8 +57,7 @@ impl Service {
     /// # Errors
     /// Возвращает ошибку пути или блокировки хранилища.
     pub async fn open_selected(&self, path: PathBuf) -> Result<Value, ApiError> {
-        let registry = Arc::clone(&self.registry);
-        blocking(move || open_selected(&registry, &path)).await
+        self.registry.open_selected(path).await
     }
 
     /// Возвращает идентификатор стартового хранилища.
@@ -76,8 +77,31 @@ impl Service {
     }
 
     fn entry(&self, scope: Scope<'_>) -> Result<Arc<Entry>, ApiError> {
-        let entries = self.registry.lock().map_err(ApiError::internal)?;
-        select(&entries, scope, &self.startup)
+        self.registry.select(scope, &self.startup)
+    }
+
+    /// Выбирает открытое хранилище по явному идентификатору.
+    ///
+    /// # Errors
+    /// Возвращает ошибку, если хранилище не открыто.
+    pub fn agent_vault(&self, vault_id: &str) -> Result<VaultRef, ApiError> {
+        let entry = self.entry(Scope::Vault(vault_id))?;
+        Ok(VaultRef::new(entry, Arc::clone(&self.validator)))
+    }
+
+    /// Выполняет запись блока и возвращает страницу вместе с результатом проверки.
+    ///
+    /// # Errors
+    /// Возвращает ошибки записи или конфликт, если ревизия квитанции уже недоступна.
+    pub async fn call_block(
+        &self,
+        operation: &str,
+        arguments: Value,
+        scope: Scope<'_>,
+    ) -> Result<BlockResult, ApiError> {
+        let entry = self.entry_for_call(&arguments, scope)?;
+        self.block_action(entry, operation, arguments, BlockResult::from_summary)
+            .await
     }
 
     /// Выполняет операцию в выбранном хранилище.
@@ -91,27 +115,19 @@ impl Service {
         scope: Scope<'_>,
     ) -> Result<Output, ApiError> {
         if operation == "list_vaults" {
-            let entries = self.registry.lock().map_err(ApiError::internal)?;
-            return Ok(Output::Json(
-                json!({"vaults": entries.iter().map(|entry| entry.descriptor()).collect::<Vec<_>>()}),
-            ));
+            let vaults = self.registry.list()?;
+            return Ok(Output::Json(json!({"vaults": vaults})));
         }
-        let scope = match scope {
-            Scope::Mcp => arguments.get("vault_id").map_or(Ok(Scope::Mcp), |value| {
-                value
-                    .as_str()
-                    .map(Scope::Vault)
-                    .ok_or_else(|| ApiError::invalid("vault_id должен быть строкой"))
-            })?,
-            Scope::Default | Scope::Vault(_) => scope,
-        };
-        let entry = self.entry(scope)?;
+        let entry = self.entry_for_call(&arguments, scope)?;
         match operation {
             "add_page" | "import_markdown" | "write_document" => {
                 self.document_action(entry, operation, arguments).await
             }
             "write_markdown" | "write_diagram" | "replace_block" | "layout_diagram" => {
-                self.block_action(entry, operation, arguments).await
+                self.block_action(entry, operation, arguments, |_, summary| {
+                    Output::json(summary)
+                })
+                .await
             }
             "check_diagram" | "export_png" => {
                 let args = decode(arguments)?;
@@ -123,6 +139,19 @@ impl Service {
                 access(entry, move |state| immediate(state, &operation, arguments)).await
             }
         }
+    }
+
+    fn entry_for_call(&self, arguments: &Value, scope: Scope<'_>) -> Result<Arc<Entry>, ApiError> {
+        let scope = match scope {
+            Scope::Mcp => arguments.get("vault_id").map_or(Ok(Scope::Mcp), |value| {
+                value
+                    .as_str()
+                    .map(Scope::Vault)
+                    .ok_or_else(|| ApiError::invalid("vault_id должен быть строкой"))
+            })?,
+            Scope::Default | Scope::Vault(_) => scope,
+        };
+        self.entry(scope)
     }
 }
 impl Drop for Service {

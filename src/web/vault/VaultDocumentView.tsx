@@ -18,9 +18,10 @@ interface DocumentViewProps {
   readonly vimEnabled: boolean;
   readonly onVimModeChange: (mode: EditorVimMode) => void;
   readonly onRevealFolder: (path: string) => void;
+  readonly agentPanel?: React.ReactNode;
 }
 
-export function VaultDocumentView({ workspace, document, active, theme, vimEnabled, onVimModeChange, onRevealFolder }: DocumentViewProps): React.JSX.Element {
+export function VaultDocumentView({ workspace, document, active, theme, vimEnabled, onVimModeChange, onRevealFolder, agentPanel }: DocumentViewProps): React.JSX.Element {
   const editorRef = useRef<LivePreviewEditorHandle>(null);
   const contextSource = useRef('');
   const [context, setContext] = useState<EditorContext | null>(null);
@@ -29,7 +30,7 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
   const breadcrumbId = useId();
   const draft = workspace.drafts[pageId];
   const source = draft?.source ?? document.source;
-  const diagrams = useVaultDiagrams(workspace, document, editorRef);
+  const diagrams = useVaultDiagrams(workspace, document, editorRef, agentPanel);
   const format = formatForPath(pageId);
   const folders = parentPath(pageId).split('/').filter(Boolean);
 
@@ -37,7 +38,8 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
   useEffect(() => {
     const target = workspace.followTarget;
     if (!active || !target || target.pageId !== pageId || target.version !== document.version) return;
-    editorRef.current?.revealPosition(target.position);
+    if ('line' in target) editorRef.current?.revealLine(target.line);
+    else editorRef.current?.revealPosition(target.position);
     workspace.clearFollowTarget();
   }, [active, pageId, document.version, workspace.followTarget]);
   useEffect(() => {
@@ -59,8 +61,14 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
     const selected = source.slice(range.from, range.to);
     try {
       if (action === 'copy') await navigator.clipboard.writeText(selected);
-      if (action === 'cut') { await navigator.clipboard.writeText(selected); editor.replaceRange(range, ''); }
-      if (action === 'paste') editor.replaceRange(range, await navigator.clipboard.readText());
+      if (action === 'cut') {
+        await navigator.clipboard.writeText(selected);
+        if (!workspace.isAgentLocked(pageId)) editor.replaceRange(range, '');
+      }
+      if (action === 'paste') {
+        const text = await navigator.clipboard.readText();
+        if (!workspace.isAgentLocked(pageId)) editor.replaceRange(range, text);
+      }
     } catch (error) { setLocalError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -97,7 +105,8 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
     {format === 'markdown' ? <LivePreviewEditor ref={editorRef} source={source} onChange={(next) => workspace.changeDraft(pageId, next)}
       renderDiagram={diagrams.renderDiagram} vimEnabled={vimEnabled} theme={theme} ariaLabel={`Документ ${document.page.title}`}
       onVimModeChange={onVimModeChange} onSave={() => void workspace.saveDraft(pageId)} onOpenLink={openLink}
-      onContextMenu={(next) => { contextSource.current = source; setContext(next); }} readOnly={draft?.modalOpen ?? false} /> : <div className="vault-standalone-diagram">
+      onContextMenu={(next) => { contextSource.current = source; setContext(next); }}
+      readOnly={draft?.modalOpen || workspace.agentLockedPaths?.has(pageId) || false} /> : <div className="vault-standalone-diagram">
       <DiagramPreview value={{ format: format as DiagramFormat, source: document.source, title: document.page.title }}
         onExpand={() => diagrams.openView({ from: 0, to: source.length, format: format as DiagramFormat, source })}
         onEdit={() => diagrams.openEdit({ from: 0, to: source.length, format: format as DiagramFormat, source })} />

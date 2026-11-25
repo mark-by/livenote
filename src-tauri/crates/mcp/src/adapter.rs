@@ -137,7 +137,7 @@ where
                     };
                     message::success(id, value)
                 }
-                message::Method::InvalidParams(text) => message::error(&id, -32603, &text),
+                message::Method::InvalidParams(text) => message::error(&id, -32602, &text),
                 message::Method::Unknown => message::error(&id, -32601, "Method not found"),
             }
         }))

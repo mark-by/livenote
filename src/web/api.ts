@@ -3,6 +3,7 @@
  * Обёртка над REST API сервера: подстановка bearer-токена, разбор ошибок,
  * единый обработчик «не авторизован».
  */
+import type { ZodType } from 'zod';
 import type {
   ApiConfig,
   Block,
@@ -22,6 +23,7 @@ import type {
   WriteBlockResult,
   WriteVaultDocumentBody
 } from '../shared/types';
+import { AGENT_HEADER, AGENT_HEADER_VALUE } from '../shared/types';
 
 /** Ключ localStorage для bearer-токена. */
 export const TOKEN_STORAGE_KEY = 'livenote_token';
@@ -96,22 +98,29 @@ export function clearToken(): void {
 // Низкоуровневая обёртка fetch
 // ---------------------------------------------------------------------------
 
-interface RequestOptions {
+interface RequestOptions<T = unknown> {
   method?: string;
   body?: unknown;
   /** Не разбирать ответ как JSON (для blob-скачиваний). */
   raw?: boolean;
+  /** Проверить JSON на границе клиента. */
+  schema?: ZodType<T>;
+  /** URL уже содержит vaultId; повторная подстановка запрещена. */
+  agent?: boolean;
 }
 
 /**
  * Выполнить запрос к API. Автоматически добавляет заголовок Authorization,
  * сериализует тело, разбирает ошибки {error:{code,message}}.
  */
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function request<T>(path: string, options: RequestOptions<T> = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token !== null) {
     headers['Authorization'] = `Bearer ${token}`;
+  }
+  if (options.agent === true) {
+    headers[AGENT_HEADER] = AGENT_HEADER_VALUE;
   }
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -119,7 +128,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   let response: Response;
   try {
-    response = await fetch(withVaultScope(path), {
+    response = await fetch(options.agent === true ? path : withVaultScope(path), {
       method: options.method ?? 'GET',
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined
@@ -162,7 +171,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (text.trim() === '') {
     return undefined as T;
   }
-  return JSON.parse(text) as T;
+  return options.schema === undefined ? JSON.parse(text) as T : options.schema.parse(JSON.parse(text));
+}
+
+/** Выполняет запрос агента по URL, который уже содержит vaultId. */
+export function requestAgent<T>(path: string, options: Omit<RequestOptions<T>, 'agent'>): Promise<T> {
+  return request<T>(path, { ...options, agent: true });
 }
 
 // ---------------------------------------------------------------------------

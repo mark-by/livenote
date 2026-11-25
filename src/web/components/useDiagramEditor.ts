@@ -24,10 +24,13 @@ interface EditorProps {
   onClose(): void;
   onCommit?: DiagramCommit;
   initialEditing?: boolean;
+  agentLocked?: boolean;
+  agentContext?: boolean;
 }
 
 /** Черновик хранит исходную ревизию до успешной записи. SSE не заменяет его. */
-export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onCommit, initialEditing = false }: EditorProps) {
+export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onCommit, initialEditing = false,
+  agentLocked = false, agentContext = false }: EditorProps) {
   const [draft, setDraft] = useState<string | null>(initialEditing ? block.source : null);
   const [selection, setSelection] = useState<DiagramSelection>(null);
   const [saving, setSaving] = useState(false);
@@ -56,7 +59,7 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onComm
   }, [dirty]);
 
   const leave = async (close: boolean): Promise<void> => {
-    if (saving || dialog !== null) return;
+    if (agentLocked || saving || dialog !== null) return;
     if (dirty) {
       const discard = await confirm({
         title: 'Отменить изменения?',
@@ -74,7 +77,7 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onComm
   };
 
   const edit = (change: FlowchartEdit | ClassDiagramEdit): void => {
-    if (!editing || saving) return;
+    if (!editing || saving || agentLocked) return;
     if (change.type === 'removeNode' && model?.nodes.length === 1) {
       setError(model.kind === 'class'
         ? 'В диаграмме должен остаться хотя бы один класс.'
@@ -111,7 +114,7 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onComm
   };
 
   const save = async (): Promise<void> => {
-    if ((!dirty && !onCommit) || saving || memberError !== null) return;
+    if ((!dirty && !onCommit) || saving || agentLocked || memberError !== null) return;
     setSaving(true);
     setError(null);
     try {
@@ -139,6 +142,7 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onComm
   };
 
   const start = (): void => {
+    if (agentLocked) return;
     setDraft(block.source);
     setMemberDrafts({});
     setError(null);
@@ -146,7 +150,7 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onComm
   };
 
   const editSource = (next: string): void => {
-    if (!editing || saving) return;
+    if (!editing || saving || agentLocked) return;
     setDraft(next);
     setMemberDrafts({});
     setSelection(null);
@@ -154,7 +158,7 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onComm
   };
 
   const selectFromDiagram = (event: MouseEvent<HTMLDivElement>): void => {
-    if (!editing || saving || !model || !(event.target instanceof Element)) return;
+    if ((!editing && !agentContext) || saving || !model || !(event.target instanceof Element)) return;
     const node = event.target.closest('.node');
     if (node) {
       const match = model.nodes.find(({ id }) => matchesNode(node, id));
@@ -166,17 +170,18 @@ export function useDiagramEditor({ block, pageRevision, onSaved, onClose, onComm
     const index = path ? Array.from(host.querySelectorAll('.flowchart-link, path.relation')).indexOf(path) : -1;
     const edge = model.edges[index];
     if (edge) setSelection({ type: 'edge', id: edge.id });
+    else setSelection(null);
   };
 
   const decorate = (host: HTMLElement): void => {
     host.querySelectorAll('.node').forEach((node) => {
       const selected = selection?.type === 'node' &&
         matchesNode(node, selection.id);
-      node.classList.toggle('flowchart-selected', editing && selected);
+      node.classList.toggle('flowchart-selected', (editing || agentContext) && selected);
     });
     host.querySelectorAll('.flowchart-link, path.relation').forEach((path, index) => {
       path.classList.toggle('flowchart-selected',
-        editing && selection?.type === 'edge' && model?.edges[index]?.id === selection.id);
+        (editing || agentContext) && selection?.type === 'edge' && model?.edges[index]?.id === selection.id);
     });
   };
 

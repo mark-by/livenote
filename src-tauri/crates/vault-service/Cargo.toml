@@ -7,13 +7,16 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.22"
+flate2 = "1"
 livenote-diagrams = { path = "../diagrams" }
 percent-encoding = "2"
+roxmltree = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 unicode-normalization = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
 vault-files = { path = "../vault-files" }
 vault-read = { path = "../vault-read" }
 zip = { version = "4", default-features = false }

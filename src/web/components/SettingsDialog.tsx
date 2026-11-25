@@ -1,5 +1,6 @@
 /** Настройки интерфейса на доступных HeroUI-контролах. */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { Button, Label, ListBox, Modal, Select, Switch } from '@heroui/react';
 import { MERMAID_THEMES } from '../../shared/types';
 import type { MermaidTheme } from '../../shared/types';
@@ -19,6 +20,7 @@ const THEME_OPTIONS: Array<{ value: MermaidTheme | ''; label: string }> = [
 ];
 
 interface SettingsDialogProps {
+  readonly agentConnections?: ReactNode;
   pageWidth: PageWidth;
   onPageWidthChange(width: PageWidth): void;
   followEvents: boolean;
@@ -69,6 +71,7 @@ export function SettingsDialog(props: SettingsDialogProps): React.JSX.Element {
               <Switch isSelected={props.followEvents} onChange={props.onFollowChange}>
                 <Switch.Content><Switch.Control><Switch.Thumb /></Switch.Control><Label>Следовать за изменениями</Label></Switch.Content>
               </Switch>
+              {props.agentConnections}
             </div>
           </Modal.Body>
           <Modal.Footer><Button variant="primary" onPress={props.onClose}>Готово</Button></Modal.Footer>

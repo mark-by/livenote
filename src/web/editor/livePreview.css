@@ -16,7 +16,7 @@
 
 .live-preview-editor .cm-editor {
   block-size: 100%;
-  font-size: 1.0625rem;
+  font-size: var(--text-base);
   outline: none;
 }
 
@@ -64,12 +64,12 @@
   padding-block-end: calc(var(--spacing) * 2);
 }
 
-.lp-heading-1 { font-size: 2rem; }
-.lp-heading-2 { font-size: 1.6rem; }
-.lp-heading-3 { font-size: 1.28rem; }
+.lp-heading-1 { font-size: var(--text-3xl); }
+.lp-heading-2 { font-size: var(--text-2xl); }
+.lp-heading-3 { font-size: var(--text-xl); }
 .lp-heading-4,
 .lp-heading-5,
-.lp-heading-6 { font-size: 1.25rem; }
+.lp-heading-6 { font-size: var(--text-lg); }
 .lp-strong { font-weight: 700; }
 .lp-emphasis { font-style: italic; }
 .lp-strike { text-decoration: line-through; }
@@ -227,6 +227,11 @@
 .lp-table :is(th, td) {
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.lp-table .lp-table-pagination {
+  flex-wrap: wrap;
+  margin-block-end: var(--spacing);
 }
 
 .lp-table [data-table-editable] :is(th, td) {

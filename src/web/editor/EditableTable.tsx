@@ -1,13 +1,15 @@
-import { Children, isValidElement, memo, useCallback, useRef, useState } from 'react';
+import { Children, isValidElement, memo, useCallback, useMemo, useRef, useState } from 'react';
 import type { FocusEvent, KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Dropdown, Input, Label, Table, TextArea } from '@heroui/react';
+import { Dropdown, Input, Label, Pagination, Table, TextArea } from '@heroui/react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { ChangeSpec } from '@codemirror/state';
 import { changeTable, editTableCell } from './tableSource';
 import type { TableAction, TableCellAddress, TableSource } from './tableSource';
+import { tablePageMarkdown, tablePageSize } from './tablePreviewSource';
+import type { TablePreviewSource } from './tablePreviewSource';
 
 function headerChildren(children: ReactNode): ReactNode {
   return Children.toArray(children).flatMap(child => {
@@ -35,12 +37,12 @@ const TablePreview = memo(function TablePreview({ source }: { readonly source: s
   return <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{source}</ReactMarkdown>;
 });
 
-function findCell(target: EventTarget | null, container: HTMLElement) {
+function findCell(target: EventTarget | null, container: HTMLElement, offset: number) {
   if (!(target instanceof Element)) return null;
   const cell = target.closest('td, th');
   const row = cell?.parentElement;
   if (!(cell instanceof HTMLTableCellElement) || !(row instanceof HTMLTableRowElement) || !container.contains(cell)) return null;
-  return { cell, row: row.rowIndex, column: cell.cellIndex };
+  return { cell, row: row.rowIndex === 0 ? 0 : row.rowIndex + offset, column: cell.cellIndex };
 }
 
 interface CellTarget extends TableCellAddress {
@@ -56,7 +58,7 @@ interface TableMenu extends CellTarget {
 type CellField = HTMLInputElement | HTMLTextAreaElement;
 
 interface EditableTableProps {
-  readonly source: string;
+  readonly source: TablePreviewSource;
   readonly table: TableSource | null;
   readonly readOnly: boolean;
   readonly onChange: (table: TableSource, changes: ChangeSpec) => void;
@@ -71,6 +73,13 @@ export function EditableTable({ source, table, readOnly, onChange, onLink, onHis
   const editing = useRef<CellTarget | null>(null);
   const [activeCell, setActiveCell] = useState<CellTarget | null>(null);
   const [menu, setMenu] = useState<TableMenu | null>(null);
+  const [selectedPage, setSelectedPage] = useState(0);
+  const pageSize = tablePageSize(source.width);
+  const lastPage = Math.max(0, Math.ceil(source.rows.length / pageSize) - 1);
+  const page = Math.min(selectedPage, lastPage);
+  if (page !== selectedPage) setSelectedPage(page);
+  const offset = page * pageSize;
+  const pageMarkdown = useMemo(() => tablePageMarkdown(source, offset, pageSize), [source, offset, pageSize]);
   const editable = table !== null && !readOnly;
   const activeEdit = editable && activeCell?.table === table ? activeCell : null;
   const activeMenu = editable && menu?.table === table ? menu : null;
@@ -80,9 +89,10 @@ export function EditableTable({ source, table, readOnly, onChange, onLink, onHis
   }, []);
 
   function focusCell({ row, column }: TableCellAddress) {
+    const visibleRow = row === 0 ? 0 : row - offset;
     requestAnimationFrame(() => {
       const grid = preview.current?.querySelector('table');
-      const targetRow = grid?.rows[Math.min(row, grid.rows.length - 1)];
+      const targetRow = grid?.rows[Math.min(visibleRow, grid.rows.length - 1)];
       targetRow?.cells[Math.min(column, targetRow.cells.length - 1)]?.focus({ preventScroll: true });
     });
   }
@@ -94,6 +104,13 @@ export function EditableTable({ source, table, readOnly, onChange, onLink, onHis
     setActiveCell(null);
     if (value !== null) onChange(target.table, editTableCell(target.table, { ...target, value }));
     if (restoreFocus) focusCell(target);
+  }
+
+  function goToPage(next: number) {
+    if (activeEdit && input.current) finishEdit(input.current.value, false);
+    menuOpen.current = false;
+    setMenu(null);
+    setSelectedPage(next);
   }
 
   function showMenu(target: CellTarget, x: number, y: number) {
@@ -135,6 +152,21 @@ export function EditableTable({ source, table, readOnly, onChange, onLink, onHis
   };
 
   return <>
+    {lastPage > 0 && <Pagination size="sm" aria-label="Страницы таблицы" className="lp-table-pagination">
+      <Pagination.Summary aria-live="polite">
+        Строки {offset + 1}–{Math.min(offset + pageSize, source.rows.length)} из {source.rows.length}
+      </Pagination.Summary>
+      <Pagination.Content>
+        <Pagination.Item>
+          <Pagination.Previous aria-label="Предыдущая страница таблицы" isDisabled={page === 0}
+            onPress={() => goToPage(page - 1)}><Pagination.PreviousIcon /></Pagination.Previous>
+        </Pagination.Item>
+        <Pagination.Item>
+          <Pagination.Next aria-label="Следующая страница таблицы" isDisabled={page === lastPage}
+            onPress={() => goToPage(page + 1)}><Pagination.NextIcon /></Pagination.Next>
+        </Pagination.Item>
+      </Pagination.Content>
+    </Pagination>}
     <div ref={preview} data-table-editable={editable || undefined}
       onClick={event => {
         if (event.target instanceof Element) {
@@ -146,11 +178,11 @@ export function EditableTable({ source, table, readOnly, onChange, onLink, onHis
           }
           if (event.target === input.current) return;
         }
-        const target = findCell(event.target, event.currentTarget);
+        const target = findCell(event.target, event.currentTarget, offset);
         if (editable && target) openEditor({ ...target, table });
       }}
       onContextMenu={event => {
-        const target = findCell(event.target, event.currentTarget);
+        const target = findCell(event.target, event.currentTarget, offset);
         if (!editable || !target) return;
         event.preventDefault();
         event.stopPropagation();
@@ -158,7 +190,7 @@ export function EditableTable({ source, table, readOnly, onChange, onLink, onHis
       }}
       onKeyDownCapture={event => {
         if (!editable) return;
-        const target = findCell(event.target, event.currentTarget);
+        const target = findCell(event.target, event.currentTarget, offset);
         if (!target) return;
         const openMenu = event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10');
         if (!openMenu && event.target === input.current) return;
@@ -175,7 +207,7 @@ export function EditableTable({ source, table, readOnly, onChange, onLink, onHis
           focusCell(target);
         } else openEditor({ ...target, table });
       }}>
-      <TablePreview source={source} />
+      <TablePreview source={pageMarkdown} />
       {activeEdit && fieldProps && createPortal(activeEdit.row === 0
         ? <Input {...fieldProps} aria-label="Название колонки" />
         : <TextArea {...fieldProps} aria-label="Содержимое ячейки" rows={1} wrap="soft" />, activeEdit.cell)}

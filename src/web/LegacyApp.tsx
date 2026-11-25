@@ -3,6 +3,7 @@
  * toolbar (новая страница, импорт, экспорт, шестерёнка настроек),
  * диалог ввода токена, диалог настроек.
  */
+import { Alert, Button, CloseButton, Spinner, Tabs } from '@heroui/react';
 import { useEffect, useRef, useState } from 'react';
 import type { ApiConfig, LiveEvent, PageFull, PageSummary } from '../shared/types';
 import {
@@ -83,6 +84,7 @@ export function LegacyApp(): React.JSX.Element {
   const { confirm, dialog: confirmDialog } = useConfirm();
 
   // Ref'ы, чтобы обработчики SSE видели актуальное состояние без переподписки
+  const fileRef = useRef<HTMLInputElement>(null);
   const followRef = useRef(followEvents);
   const openTabsRef = useRef(openTabs);
   const pagesByIdRef = useRef(pagesById);
@@ -175,7 +177,13 @@ export function LegacyApp(): React.JSX.Element {
     setOpenTabs((prev) => {
       const next = prev.filter((id) => id !== pageId);
       if (activeTabRef.current === pageId) {
-        setActiveTab(next.length > 0 ? next[next.length - 1]! : null);
+        const nextActive = next.length > 0 ? next[next.length - 1]! : null;
+        setActiveTab(nextActive);
+        if (nextActive !== null) {
+          window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>(`[data-legacy-tab="${CSS.escape(nextActive)}"]`)?.focus();
+          });
+        }
       }
       return next;
     });
@@ -423,11 +431,10 @@ export function LegacyApp(): React.JSX.Element {
     <div className="app" data-page-width={pageWidth}>
       <div className="topbar">
         <div className="toolbar">
-          <button
-            type="button"
-            className="btn btn--icon"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            title={sidebarOpen ? 'Скрыть страницы' : 'Показать страницы'}
+          <Button
+            className="btn--icon"
+            variant="ghost"
+            onPress={() => setSidebarOpen(!sidebarOpen)}
             aria-label={sidebarOpen ? 'Скрыть страницы' : 'Показать страницы'}
             aria-pressed={sidebarOpen}
           >
@@ -445,37 +452,39 @@ export function LegacyApp(): React.JSX.Element {
               <rect width="18" height="18" x="3" y="3" rx="2" />
               <path d="M9 3v18" />
             </svg>
-          </button>
+          </Button>
           <span className="toolbar__title">LiveNote</span>
-          <button className="btn" type="button" onClick={handleCreatePage}>
+          <Button variant="primary" onPress={handleCreatePage}>
             + Новая страница
-          </button>
-          <label className="btn" role="button" title="Импортировать Markdown-файл">
+          </Button>
+          <Button variant="secondary" onPress={() => fileRef.current?.click()}>
             Импорт .md
-            <input
-              type="file"
-              accept=".md,.markdown,text/markdown,text/plain"
-              style={{ display: 'none' }}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) {
-                  handleImportFile(file);
-                }
-                event.target.value = '';
-              }}
-            />
-          </label>
-          <button className="btn" type="button" onClick={handleExportPage} disabled={activeTab === null}>
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".md,.markdown,text/markdown,text/plain"
+            style={{ display: 'none' }}
+            tabIndex={-1}
+            aria-hidden="true"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) {
+                handleImportFile(file);
+              }
+              event.target.value = '';
+            }}
+          />
+          <Button variant="secondary" onPress={handleExportPage} isDisabled={activeTab === null}>
             Экспорт страницы
-          </button>
-          <button className="btn" type="button" onClick={handleExportAll}>
+          </Button>
+          <Button variant="secondary" onPress={handleExportAll}>
             Экспорт всего
-          </button>
-          <button
-            type="button"
-            className="btn btn--icon"
-            onClick={() => setSettingsOpen(true)}
-            title="Настройки"
+          </Button>
+          <Button
+            className="btn--icon"
+            variant="ghost"
+            onPress={() => setSettingsOpen(true)}
             aria-label="Настройки"
             aria-haspopup="dialog"
           >
@@ -483,39 +492,37 @@ export function LegacyApp(): React.JSX.Element {
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1h1.82a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1 1z" />
             </svg>
-          </button>
+          </Button>
         </div>
 
         {openTabs.length > 0 && (
-          <div className="tabs-bar">
-            {openTabs.map((pageId) => {
-              const tabPage = pagesById[pageId];
-              const sidebarMeta = pages.find((item) => item.id === pageId);
-              const title = tabPage?.title ?? sidebarMeta?.title ?? pageId;
-              return (
-                <div
-                  key={pageId}
-                  className={`tab${pageId === activeTab ? ' tab--active' : ''}`}
-                  role="tab"
-                  aria-selected={pageId === activeTab}
-                  onClick={() => setActiveTab(pageId)}
-                >
-                  <span className="tab__title">{title}</span>
-                  <button
-                    type="button"
-                    className="tab__close"
-                    title="Закрыть вкладку"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closeTab(pageId);
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+          <Tabs
+            aria-label="Открытые страницы"
+            className="tabs-bar"
+            selectedKey={activeTab ?? undefined}
+            onSelectionChange={(key) => openPage(String(key))}
+          >
+            <Tabs.ListContainer>
+              <Tabs.List aria-label="Открытые страницы">
+                {openTabs.map((pageId) => {
+                  const tabPage = pagesById[pageId];
+                  const sidebarMeta = pages.find((item) => item.id === pageId);
+                  const title = tabPage?.title ?? sidebarMeta?.title ?? pageId;
+                  return (
+                    <Tabs.Tab id={pageId} key={pageId} className="tab" data-legacy-tab={pageId}>
+                      <span className="tab__title">{title}</span>
+                      <Tabs.Indicator />
+                      <CloseButton
+                        className="tab__close"
+                        aria-label={`Закрыть ${title}`}
+                        onPress={() => closeTab(pageId)}
+                      />
+                    </Tabs.Tab>
+                  );
+                })}
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
         )}
       </div>
 
@@ -536,12 +543,15 @@ export function LegacyApp(): React.JSX.Element {
               {ready ? (
                 <>
                   <p>Выберите страницу слева или создайте новую.</p>
-                  <button className="btn btn--primary" type="button" onClick={handleCreatePage}>
+                  <Button variant="primary" onPress={handleCreatePage}>
                     + Новая страница
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <div className="spinner" aria-label="Загрузка" />
+                <div role="status" className="legacy-loading">
+                  <Spinner aria-label="Загрузка страниц" />
+                  <span>Загрузка страниц…</span>
+                </div>
               )}
             </div>
           )}
@@ -561,17 +571,21 @@ export function LegacyApp(): React.JSX.Element {
       )}
 
       {globalError !== null && (
-        <div className="global-error" role="alert">
-          <span className="global-error__text">{globalError}</span>
-          <button
-            type="button"
+        <Alert className="global-error" color="danger" role="alert">
+          <Alert.Content>
+            <Alert.Title>Не удалось выполнить действие</Alert.Title>
+            <Alert.Description>{globalError}</Alert.Description>
+          </Alert.Content>
+          <Button
+            size="sm"
+            variant="ghost"
             className="global-error__close"
-            onClick={() => setGlobalError(null)}
+            onPress={() => setGlobalError(null)}
             aria-label="Закрыть"
           >
             ×
-          </button>
-        </div>
+          </Button>
+        </Alert>
       )}
     </div>
   );

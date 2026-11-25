@@ -48,7 +48,7 @@ test('Скрытая диаграмма не прерывает ввод и со
     await frameGate;
     await route.continue();
   });
-  await page.route('**/api/pages/*/document', async route => {
+  await page.route(/\/api\/(?:vaults\/[^/]+\/)?pages\/[^/]+\/document$/, async route => {
     if (route.request().method() === 'PUT' && firstSave) {
       firstSave = false;
       notifySave();
@@ -59,6 +59,8 @@ test('Скрытая диаграмма не прерывает ввод и со
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await expect(page.locator('.vault-tree__page').filter({ hasText: '00-diagram' })).toBeVisible();
   await frameStarted;
+  // Закрепляем вкладку, чтобы открытие другой заметки не заменило её.
+  await page.getByRole('tab').filter({ hasText: '00-diagram' }).click();
   await page.locator('.vault-tree__page').filter({ hasText: '01-note' }).click();
   const editor = page.locator('.vault-document:not([hidden]) .cm-content');
   await expect(editor).toBeVisible();

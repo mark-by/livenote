@@ -47,20 +47,28 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
     revealPosition(position) {
       view.current?.dispatch({ effects: EditorView.scrollIntoView(position, { y: 'center' }) });
     },
+    revealLine(line) {
+      const editor = view.current;
+      if (!editor) return;
+      const doc = editor.state.doc;
+      const position = doc.line(Math.min(line, doc.lines)).from;
+      editor.dispatch({ effects: EditorView.scrollIntoView(position, { y: 'center' }) });
+    },
     getSelection() {
       const selection = view.current?.state.selection.main;
       return { from: selection?.from ?? 0, to: selection?.to ?? 0 };
     },
-    replaceRange(range, text) {
+    replaceRange(range, text, options) {
       const editor = view.current;
       if (!editor) return;
+      const focus = options?.focus !== false;
       editor.dispatch({
         changes: { from: range.from, to: range.to, insert: text },
         selection: { anchor: range.from + text.length },
         userEvent: 'input',
-        scrollIntoView: true
+        scrollIntoView: focus
       });
-      editor.focus();
+      if (focus) editor.focus();
     }
   }), []);
 

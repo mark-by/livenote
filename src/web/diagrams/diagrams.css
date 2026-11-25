@@ -6,6 +6,55 @@
   display: flex;
   justify-content: flex-end;
 }
+.diagram-adapter__title :is(.diagram-adapter__title-trigger, .diagram-adapter__title-input) {
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  max-inline-size: 100%;
+  min-block-size: 0;
+}
+.diagram-adapter__title .diagram-adapter__title-trigger {
+  display: block;
+  block-size: auto;
+  padding: 0 var(--spacing);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+  text-align: start;
+  text-decoration: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+.diagram-adapter__title .diagram-adapter__title-trigger:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.diagram-adapter__title .diagram-adapter__title-input {
+  box-sizing: border-box;
+  block-size: auto;
+  inline-size: 100%;
+  padding: 0 calc(var(--spacing) - 1px);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+}
+.diagram-adapter__title .diagram-adapter__title-input:focus {
+  border-color: var(--accent);
+}
+.diagram-adapter__title .diagram-adapter__title-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+.lp-diagram:has(.diagram-adapter__title :focus) {
+  background: transparent;
+}
+.diagram-adapter__title-error {
+  color: var(--danger);
+  font-size: var(--text-sm);
+  font-weight: normal;
+}
 .diagram-fullscreen .diagram-fullscreen__btn--primary {
   background: var(--accent);
   color: var(--accent-foreground);

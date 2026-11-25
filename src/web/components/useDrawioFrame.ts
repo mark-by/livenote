@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { decodeExport, messageError, DRAWIO_FRAME_URL, DRAWIO_MODAL_EVENT } from '../diagrams/drawioProtocol';
 import type { DrawioMessage, ExportFormat } from '../diagrams/drawioProtocol';
+import type { AgentElementRef } from '../../shared/types';
 export { DRAWIO_FRAME_URL, DRAWIO_MODAL_EVENT } from '../diagrams/drawioProtocol';
 
 const FRAME_TIMEOUT_MS = 20_000;
@@ -19,13 +20,87 @@ interface DrawioFrameOptions {
   onAutosave?(xml: string): void;
   /** Фоновый preview не должен забирать фокус у открытого fullscreen-редактора. */
   backgroundPreview?: boolean;
+  agentContext?: boolean;
+  agentLocked?: boolean;
+}
+
+interface DrawioCell { getId(): string }
+
+interface DrawioUi {
+  setFileData(...args: unknown[]): unknown;
+  currentPage?: { getId(): string };
+  editor: {
+    modified: boolean;
+    undoManager: { undo(): void; redo(): void };
+    graph: {
+      container: HTMLElement;
+      model: { execute(change: unknown): void };
+      getSelectionCells(): DrawioCell[];
+      setSelectionCells(cells: DrawioCell[]): void;
+      isEditing(): boolean;
+      stopEditing(cancel: boolean): void;
+      isCellEditable(cell: DrawioCell): boolean;
+      isCellMovable(cell: DrawioCell): boolean;
+    };
+  };
+}
+
+function watchDrawioLoad(frame: HTMLIFrameElement, onReady: (ui: DrawioUi) => void): () => void {
+  const win = frame.contentWindow as (Window & { EditorUi?: { prototype: DrawioUi } }) | null;
+  if (win?.location.origin !== window.location.origin || win.location.pathname !== '/drawio/index.html') {
+    throw messageError('недоступен локальный редактор для чтения выделения');
+  }
+  const prototype = win.EditorUi?.prototype;
+  const original = prototype?.setFileData;
+  if (!prototype || typeof original !== 'function') throw messageError('не найден мост выделения draw.io');
+  const restore = (): void => {
+    if (prototype.setFileData === intercept) prototype.setFileData = original;
+  };
+  function intercept(this: DrawioUi, ...args: unknown[]): unknown {
+    try {
+      const result = original?.apply(this, args);
+      onReady(this);
+      return result;
+    } finally { restore(); }
+  }
+  prototype.setFileData = intercept;
+  return restore;
+}
+
+function protectDrawio(ui: DrawioUi, locked: () => boolean): () => void {
+  const { graph, undoManager } = ui.editor;
+  const execute = graph.model.execute.bind(graph.model);
+  const editable = graph.isCellEditable.bind(graph);
+  const movable = graph.isCellMovable.bind(graph);
+  const undo = undoManager.undo.bind(undoManager);
+  const redo = undoManager.redo.bind(undoManager);
+  graph.model.execute = change => { if (!locked()) execute(change); };
+  graph.isCellEditable = cell => !locked() && editable(cell);
+  graph.isCellMovable = cell => !locked() && movable(cell);
+  undoManager.undo = () => { if (!locked()) undo(); };
+  undoManager.redo = () => { if (!locked()) redo(); };
+  // Изменения списка страниц и другие действия меню могут идти мимо модели графа.
+  const doc = graph.container.ownerDocument;
+  const gate = (event: Event): void => {
+    if (!locked()) return;
+    const target = event.target;
+    if (target && 'nodeType' in target && graph.container.contains(target as Node)
+      && (event.type === 'pointerdown' || event.type === 'click')) return;
+    if (event.type === 'keydown' && 'key' in event && (event.key === 'Tab' || event.key === 'Escape')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  const events = ['pointerdown', 'click', 'dblclick', 'contextmenu', 'keydown', 'paste', 'drop'];
+  for (const name of events) doc.addEventListener(name, gate, true);
+  return () => { for (const name of events) doc.removeEventListener(name, gate, true); };
 }
 
 /**
  * Единственная точка общения с локальным draw.io. Listener устанавливается до src,
  * сообщения принимаются только от локального origin и точного contentWindow.
  */
-export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = false }: DrawioFrameOptions) {
+export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = false, agentContext = false,
+  agentLocked = false }: DrawioFrameOptions) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const xmlRef = useRef(xml);
   const autosaveRef = useRef(onAutosave);
@@ -37,6 +112,10 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
   const initializedRef = useRef(false);
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const readyRef = useRef(false);
+  const uiRef = useRef<DrawioUi | null>(null);
+  const bridgeErrorRef = useRef<Error | null>(null);
+  const lockedRef = useRef(agentLocked);
+  lockedRef.current = agentLocked;
   const [error, setError] = useState<string | null>(null);
   const [previewEnabled, setPreviewEnabled] = useState(() =>
     !backgroundPreview || document.querySelector('.drawio-fullscreen__frame') === null
@@ -84,6 +163,14 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
     let editorDocumentLoaded = false;
     let finishLoad: (() => void) | null = null;
     let failLoad: ((reason: Error) => void) | null = null;
+    let restoreBridge: (() => void) | undefined;
+    let removeProtection: (() => void) | undefined;
+    const clearBridge = (): void => {
+      restoreBridge?.();
+      removeProtection?.();
+      uiRef.current = null;
+    };
+    bridgeErrorRef.current = null;
     initializedRef.current = false;
     setReadyKey(null);
     setError(null);
@@ -103,6 +190,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
       rejectPending(reason);
       failLoad?.(reason);
       failLoad = null;
+      clearBridge();
       setReadyKey(null);
       setError(reason.message);
       // iframe принадлежит React: не удаляем DOM-узел, который может быть
@@ -126,7 +214,8 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
       return new Promise<string>((resolve, reject) => {
         const timer = window.setTimeout(() => {
           pendingRef.current.delete(requestId);
-          discard(messageError(`таймаут экспорта ${format.toUpperCase()}`));
+          // Ошибка экспорта не должна выгружать живой черновик.
+          reject(messageError(`таймаут экспорта ${format.toUpperCase()}`));
         }, FRAME_TIMEOUT_MS);
         pendingRef.current.set(requestId, { format, resolve, reject, timer });
         try {
@@ -144,7 +233,7 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
     exportNowRef.current = exportNow;
 
     const onMessage = (event: MessageEvent): void => {
-      if (event.origin !== origin || event.source !== iframe.contentWindow) return;
+      if (disposed || event.origin !== origin || event.source !== iframe.contentWindow) return;
       let message: DrawioMessage;
       try {
         message = JSON.parse(String(event.data)) as DrawioMessage;
@@ -156,6 +245,17 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
         return;
       }
       if (message.event === 'init') {
+        if (initializedRef.current) return;
+        if (agentContext && !backgroundPreview) {
+          try {
+            restoreBridge = watchDrawioLoad(iframe, ui => {
+              removeProtection = protectDrawio(ui, () => lockedRef.current);
+              uiRef.current = ui;
+            });
+          } catch (error) {
+            bridgeErrorRef.current = error instanceof Error ? error : messageError(String(error));
+          }
+        }
         initializedRef.current = true;
         // load и все последующие операции идут через одну очередь. Событие load
         // подтверждает, что редактор действительно принял XML.
@@ -244,11 +344,12 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
       failLoad?.(messageError('загрузка отменена закрытием редактора'));
       failLoad = null;
       exportNowRef.current = null;
+      clearBridge();
       // React уничтожит iframe при unmount; при смене frameKey сохраняем элемент
       // для следующего effect, но немедленно выгружаем старый документ.
       iframe.src = 'about:blank';
     };
-  }, [loadedFrameKey, backgroundPreview, previewEnabled]);
+  }, [loadedFrameKey, backgroundPreview, previewEnabled, agentContext]);
 
   const exportDiagram = (format: ExportFormat, resetEditor = false): Promise<string> => {
     const exportNow = exportNowRef.current;
@@ -261,5 +362,26 @@ export function useDrawioFrame({ xml, frameKey, onAutosave, backgroundPreview = 
     return operation;
   };
 
-  return { iframeRef, ready, error, exportDiagram };
+  const capture = () => {
+    const ui = uiRef.current;
+    if (!ready || !ui) throw bridgeErrorRef.current ?? messageError('выделение недоступно: редактор ещё не загрузил схему');
+    const pageId = ui.currentPage?.getId();
+    const { graph } = ui.editor;
+    const cells = graph.getSelectionCells();
+    const selected: AgentElementRef[] = cells.map(cell => ({
+      id: cell.getId(), kind: 'element', ...(pageId !== undefined ? { pageId } : {})
+    }));
+    // Завершаем ввод до блокировки модели. resetEditor также закрывает меню.
+    const modified = ui.editor.modified || graph.isEditing();
+    if (graph.isEditing()) graph.stopEditing(false);
+    const source = exportDiagram('xml', true).then(exported => {
+      if (ui === uiRef.current && pageId === ui.currentPage?.getId() && graph.getSelectionCells().length === 0) {
+        graph.setSelectionCells(cells);
+      }
+      return modified ? exported : xmlRef.current;
+    });
+    return { selected, source };
+  };
+
+  return { iframeRef, ready, error, exportDiagram, capture };
 }

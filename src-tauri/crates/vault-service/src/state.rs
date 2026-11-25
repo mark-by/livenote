@@ -108,14 +108,16 @@ impl State {
     }
 
     pub(crate) fn emit(&self, name: &str, path: &str, revision: u64) {
-        let mut payload = event(name, path, revision);
-        payload.insert("origin".into(), json!("api"));
-        publish(&self.events, payload);
+        self.emit_with_origin(name, path, revision, "api");
     }
 
     fn emit_external(&self, name: &str, path: &str, revision: u64) {
+        self.emit_with_origin(name, path, revision, "external");
+    }
+
+    pub(crate) fn emit_with_origin(&self, name: &str, path: &str, revision: u64, origin: &str) {
         let mut payload = event(name, path, revision);
-        payload.insert("origin".into(), json!("external"));
+        payload.insert("origin".into(), json!(origin));
         publish(&self.events, payload);
     }
 
@@ -179,21 +181,27 @@ impl State {
     }
 
     pub(crate) fn render_fields(&self, doc: &VaultDocument) -> VaultDocument {
-        let mut doc = doc.clone();
-        if let Some(confirmations) = self.renders.get(&doc.path) {
-            for block in &mut doc.page.blocks {
-                if let Some(confirmation) = confirmations
-                    .get(&block.id)
-                    .filter(|item| item.revision == doc.page.revision)
-                {
-                    block.rendered_revision = Some(confirmation.revision);
-                    block.render_ok = Some(confirmation.ok);
-                    block.render_error = confirmation.error.clone();
-                }
+        render_document(doc.clone(), self.renders.get(&doc.path))
+    }
+}
+
+pub(crate) fn render_document(
+    mut doc: VaultDocument,
+    confirmations: Option<&BTreeMap<String, Rendered>>,
+) -> VaultDocument {
+    if let Some(confirmations) = confirmations {
+        for block in &mut doc.page.blocks {
+            if let Some(confirmation) = confirmations
+                .get(&block.id)
+                .filter(|item| item.revision == doc.page.revision)
+            {
+                block.rendered_revision = Some(confirmation.revision);
+                block.render_ok = Some(confirmation.ok);
+                block.render_error = confirmation.error.clone();
             }
         }
-        doc
     }
+    doc
 }
 pub fn note_path(path: &str) -> Result<RelativePath, ApiError> {
     let relative = user_path(path)?;
