@@ -114,8 +114,16 @@ pub(super) async fn run(
     if !shutdown.is_cancelled() {
         println!("LiveNote: http://{address}/ (MCP: /mcp)");
     }
+    #[cfg(all(not(debug_assertions), any(target_os = "macos", target_os = "linux")))]
+    let updates = super::updates::start(app, shutdown);
     let stopped = serving.await;
     shutdown.cancel();
+    #[cfg(all(not(debug_assertions), any(target_os = "macos", target_os = "linux")))]
+    if let Some(task) = updates
+        && let Err(error) = task.await
+    {
+        eprintln!("Ошибка задачи обновления LiveNote: {error}");
+    }
     agent.drain().await;
     stopped.context("Ошибка HTTP-сервера LiveNote")
 }

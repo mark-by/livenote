@@ -3,7 +3,7 @@ name = "livenote"
 version = "0.1.0"
 description = "Локальный визуальный блокнот LiveNote"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.90"
 license = "MIT"
 
 [build-dependencies]
@@ -36,6 +36,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tower-http = { version = "0.6", features = ["fs"] }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+tauri-plugin-updater = "2.14.1"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -30,6 +30,15 @@
       ]
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "requireSignedVersion": true,
+      "endpoints": [
+        "https://updates.mark-by.ru/api/desktop/updates/livenote/stable/{{target}}/{{arch}}/{{current_version}}"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "resources": {

@@ -4,6 +4,8 @@ pub mod agent_connections;
 mod chromium;
 mod http;
 mod server;
+#[cfg(all(not(debug_assertions), any(target_os = "macos", target_os = "linux")))]
+mod updates;
 mod vault;
 mod window;
 
@@ -43,8 +45,10 @@ fn launch() -> Result<()> {
     let exit_ready = Arc::new(AtomicBool::new(false));
     let worker_shutdown = shutdown.clone();
     let worker_exit_ready = Arc::clone(&exit_ready);
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    #[cfg(all(not(debug_assertions), any(target_os = "macos", target_os = "linux")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let app = builder
         .setup(move |app| {
             let app = app.handle().clone();
             // Нативный цикл обрабатывает диалоги и окна, пока сервер запускается в фоне.

@@ -16,7 +16,7 @@
 
 ```bash
 make run      # запустить приложение в режиме разработки (npm run tauri dev)
-make install  # собрать DMG на macOS или собрать и установить пакет на Ubuntu
+make install  # собрать DMG на macOS или AppImage на Ubuntu
 ```
 
 Поддерживаемые сборки:
@@ -24,9 +24,9 @@ make install  # собрать DMG на macOS или собрать и уста�
 | Платформа сборки | Пакет | Установка |
 |---|---|---|
 | macOS на Apple Silicon | `src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/LiveNote_*_aarch64.dmg` | Откройте образ и перетащите `LiveNote.app` в `Applications`. |
-| Ubuntu 24.04 на x86-64 | `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb` | `apt-get install`, через `sudo` при необходимости |
+| Ubuntu 24.04 на x86-64 | `src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage` | Скопируйте файл в личную папку. Выполните `chmod +x <файл>` и запустите его. |
 
-Для сборки установите Node.js 24, npm и Rust через `rustup`. На macOS установите инструменты Xcode:
+Для сборки установите Node.js 24, npm и Rust 1.100 через `rustup`. На macOS установите инструменты Xcode:
 
 ```bash
 xcode-select --install
@@ -37,8 +37,11 @@ xcode-select --install
 ```bash
 sudo apt update
 sudo apt install build-essential curl wget file libwebkit2gtk-4.1-dev libxdo-dev \
-  libssl-dev libayatana-appindicator3-dev librsvg2-dev
+  libssl-dev libayatana-appindicator3-dev librsvg2-dev libfuse2t64
 ```
+
+Для запуска AppImage на Ubuntu установите `libfuse2t64`, если система сообщает об ошибке FUSE.
+Храните AppImage в папке с правом записи: LiveNote заменяет этот файл при обновлении.
 
 Пакет содержит сервер Rust, веб-интерфейс и ресурсы draw.io. Node.js нужен только для сборки.
 При первом запуске разрешите LiveNote скачать Chromium. Приложение проверяет контрольную сумму архива.
@@ -53,6 +56,60 @@ sudo apt install build-essential curl wget file libwebkit2gtk-4.1-dev libxdo-dev
 
 `LIVENOTE_TOKEN` задаёт токен для локальных запросов. `LIVENOTE_THEME` задаёт тему Mermaid.
 Тема по умолчанию — `default`.
+
+### Выпуск настольного приложения
+
+LiveNote проверяет канал `stable` на `updates.mark-by.ru` после открытия главного окна.
+Если есть новая версия, подтвердите установку. LiveNote покажет ход загрузки, проверит подпись и перезапустится.
+Локальные сборки без ключа обновления не проверяют.
+Подпись Tauri защищает обновления, но не заменяет нотаризацию Apple. Текущая сборка macOS её не выполняет.
+
+Запускайте выпуск на Mac с Apple Silicon. Установите `minisign` и GitHub CLI.
+Проверьте вход в GitHub через `gh auth status`.
+Включите GitHub Actions в `origin` и добавьте `.github/workflows/linux-appimage.yml` в основную ветку.
+У вашей учётной записи должны быть права запускать Actions и создавать релизы в `origin`.
+Храните отдельный закрытый ключ Tauri для LiveNote и его файл `.pub` вне репозитория.
+Не меняйте ключ между выпусками: старые версии проверяют подпись по своему открытому ключу.
+
+Создайте ключ один раз:
+
+```bash
+mkdir -p "$HOME/.config/livenote"
+chmod 700 "$HOME/.config/livenote"
+npm run tauri -- signer generate -w "$HOME/.config/livenote/updater.key"
+```
+
+Сохраните резервную копию закрытого ключа и пароля. Не передавайте их вместе с установщиками.
+Задайте в локальном `.env` путь `TAURI_SIGNING_PRIVATE_KEY_PATH`, пароль `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, если он есть, и `UPLOAD_TOKEN`.
+Не добавляйте `.env` в Git.
+
+Измените версию в `package.json` и `package-lock.json` одной командой:
+
+```bash
+npm version 0.1.1 --no-git-tag-version
+```
+
+Tauri читает версию из `package.json`. Версия пакета Rust не задаёт версию настольного приложения.
+`make release` не повышает версию. Зафиксируйте изменения и отправьте ветку в `origin`.
+Обе команды требуют чистую рабочую копию с тем же коммитом, что и ветка на GitHub.
+
+```bash
+make release-build
+make release NOTES="Исправили открытие блокнотов"
+```
+
+`make release-build` запускает сборку и проверяет пакеты без публикации релиза. Этот шаг необязателен.
+Обе команды сохраняют пакеты, подписи и контрольные суммы в `dist/release/vX.Y.Z/run.*`.
+GitHub Actions собирает AppImage на Ubuntu 24.04 x86‑64 одновременно со сборкой DMG на Mac.
+Mac скачивает AppImage из конкретного прогона и подписывает его. Docker не нужен.
+Закрытый ключ, пароль и `UPLOAD_TOKEN` остаются на Mac. GitHub получает только открытый ключ.
+Команда готовит черновик GitHub Release с DMG и AppImage под тегом `vX.Y.Z`.
+Затем она загружает подписанные обновления обеих платформ в `stable` и публикует черновик.
+`NOTES` можно не указывать.
+
+Если публикация прервалась, не удаляйте опубликованные файлы и не повторяйте загрузку вслепую.
+Проверьте черновик GitHub и состояние обеих платформ на сервере обновлений.
+Ответ `409` означает, что сервер уже хранит эту версию для выбранной платформы.
 
 ### Несколько vault
 

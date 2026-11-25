@@ -11,7 +11,7 @@ case "$(uname -s):$(uname -m)" in
     ;;
   Linux:x86_64)
     target=x86_64-unknown-linux-gnu
-    format=deb
+    format=appimage
     ;;
   *)
     printf '%s\n' 'Сборка поддерживает macOS на Apple Silicon и Ubuntu 24.04 на x86-64.' >&2
@@ -30,12 +30,10 @@ case "$format" in
     printf 'Образ LiveNote готов: %s\n' "$package"
     printf '%s\n' 'Откройте образ и перетащите LiveNote.app в Applications.'
     ;;
-  deb)
-    package="$bundle_dir/deb/LiveNote_${version}_amd64.deb"
-    if [ "$(id -u)" -eq 0 ]; then
-      apt-get install --reinstall "$package"
-    else
-      sudo apt-get install --reinstall "$package"
-    fi
+  appimage)
+    package="$bundle_dir/appimage/LiveNote_${version}_amd64.AppImage"
+    test -f "$package"
+    printf 'AppImage LiveNote готов: %s\n' "$package"
+    printf '%s\n' 'Скопируйте файл в личную папку, сделайте исполняемым и запустите его.'
     ;;
 esac

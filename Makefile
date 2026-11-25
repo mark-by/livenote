@@ -4,9 +4,16 @@
 .DEFAULT_GOAL := run
 
 .PHONY: install build run dev-web typecheck clean
+.PHONY: release release-build
 
 install:
 	sh scripts/install-desktop.sh
+
+release:
+	@bash scripts/release/release.sh publish
+
+release-build:
+	@bash scripts/release/release.sh build
 
 # Сборка ставит зависимости автоматически, если их ещё нет.
 build:
