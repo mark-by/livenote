@@ -61,9 +61,11 @@ export function registerComposerChecks(getFixture, timeout) {
     await expect(panel.getByText(/Сначала документы|Сначала код/)).toHaveCount(0);
     const settings = panel.getByRole('button', { name: 'Настройки агента' });
     const dialog = page.getByRole('dialog', { name: 'Настройки' });
+    const context = dialog.getByRole('option', { name: 'Контекст', exact: true });
     const docs = dialog.getByRole('radio', { name: 'Сначала документы', exact: true });
     const code = dialog.getByRole('radio', { name: 'Сначала код', exact: true });
     await settings.click();
+    await context.click();
     await expect(docs).toBeChecked();
 
     // Act: выбрать код, перезагрузить страницу и отправить запрос.
@@ -71,6 +73,7 @@ export function registerComposerChecks(getFixture, timeout) {
     await expect(code).toBeChecked();
     await page.reload();
     await settings.click();
+    await context.click();
     await expect(code).toBeChecked();
     await dialog.getByRole('button', { name: 'Готово', exact: true }).click();
     await panel.getByRole('textbox', { name: 'Сообщение агенту' }).fill('Сначала поищи код');

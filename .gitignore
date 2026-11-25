@@ -24,3 +24,5 @@ src/web/public/drawio.backup-*/
 /src-tauri/crates/*/Cargo.lock
 /src-tauri/gen/schemas/
 .agents
+design/
+.metrics

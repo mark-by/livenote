@@ -30,7 +30,7 @@ const tokens = (document) => ({ expectedRevision: document.page.revision, expect
 const getDocument = async (id) => (await api(`/pages/${encodeURIComponent(id)}/document`)).document;
 const documentRoute = /\/api\/(?:vaults\/[^/]+\/)?pages\/[^/]+\/document$/;
 
-async function fixture(t, source = '# Заголовок\n\nТекст заметки с **акцентом** и #тег.\n\n- первый пункт\n- второй пункт\n\n> Цитата.\n', { mermaidTheme, additionalFile, macTitlebar } = {}) {
+async function fixture(t, source = '# Заголовок\n\nТекст заметки с **акцентом** и #тег.\n\n- первый пункт\n- второй пункт\n\n> Цитата.\n', { mermaidTheme, additionalFile, macTitlebar, platform } = {}) {
   const suffix = `shell-${Date.now()}-${sequence++}`;
   const id = `Fixtures/${suffix}/${suffix}.md`;
   await api('/pages', 'POST', { title: suffix, path: id, source });
@@ -44,6 +44,9 @@ async function fixture(t, source = '# Заголовок\n\nТекст заме�
   }
   if (macTitlebar) {
     await context.addInitScript(() => { window.__LIVENOTE_MACOS_TITLEBAR__ = true; });
+  }
+  if (platform) {
+    await context.addInitScript(value => Object.defineProperty(navigator, 'platform', { value }), platform);
   }
   t.after(async () => {
     await context.close();
@@ -73,7 +76,50 @@ async function shot(page, name) {
   if (screenshots) await page.screenshot({ path: `${screenshots}/${name}.png`, fullPage: true, animations: 'disabled' });
 }
 
+for (const [platform, modifier, otherModifier] of [['MacIntel', 'Meta', 'Control'], ['Win32', 'Control', 'Meta']]) {
+  test(`Сочетание ${modifier}+, открывает настройки из редактора на ${platform}`, { timeout: 30_000 }, async t => {
+    const { page, id } = await fixture(t, undefined, { platform });
+    const editor = page.locator(`.vault-document[data-page-id="${id}"] .cm-content`);
+    const settings = page.getByRole('dialog', { name: 'Настройки' });
+    await editor.focus();
+    await editor.press(`${otherModifier}+,`);
+    await expect(settings).toBeHidden();
+    await editor.press(`${modifier}+,`);
+    await expect(settings).toBeVisible();
+    await page.keyboard.press(`${modifier}+,`);
+    await expect(settings).toHaveCount(1);
+    await settings.getByRole('button', { name: 'Готово' }).click();
+    await expect(settings).toBeHidden();
+    await expect(editor).toBeFocused();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole('button', { name: 'Открыть дерево заметок' }).click();
+    const tree = page.getByRole('dialog', { name: 'Дерево заметок' });
+    await expect(tree).toBeVisible();
+    await page.keyboard.press(`${modifier}+,`);
+    await expect(settings).toBeHidden();
+    await expect(tree).toBeVisible();
+  });
+}
+
 const documentTab = (page, title) => page.getByRole('tab').filter({ has: page.getByText(title, { exact: true }) });
+
+for (const [platform, modifier] of [['MacIntel', 'Meta'], ['Win32', 'Control']]) {
+  test(`Горячие клавиши листают историю файлов на ${platform}`, { timeout: 30_000 }, async t => {
+    const second = 'Следующая заметка';
+    const { page, id, suffix } = await fixture(t, undefined, { platform, additionalFile: second });
+    await page.getByRole('navigation', { name: 'Файлы хранилища' }).getByRole('button', { name: second, exact: true }).click();
+    const editor = page.locator(`.vault-document[data-page-id="Fixtures/${suffix}/${second}.md"] .cm-content`);
+    await editor.press(`${modifier}+[`);
+    await expect(documentTab(page, suffix)).toHaveAttribute('aria-selected', 'true');
+    const first = page.locator(`.vault-document[data-page-id="${id}"] .cm-content`);
+    await first.press(`${modifier}+[`);
+    await expect(documentTab(page, suffix)).toHaveAttribute('aria-selected', 'true');
+    await first.press(`${modifier}+]`);
+    await expect(documentTab(page, second)).toHaveAttribute('aria-selected', 'true');
+  });
+}
+
 const tabTitles = (page) => page.locator('[role="tab"] .vault-tab__label');
 const tabsTimeout = 120_000;
 const mermaidDownloadTimeout = 90_000;
@@ -1311,8 +1357,9 @@ test('Mobile tree, persistent Vim and dark theme remain usable without horizonta
   await page.getByRole('button', { name: 'Меню LiveNote' }).click();
   await page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
   const settings = page.getByRole('dialog', { name: 'Настройки' });
-  const vimSwitch = settings.getByRole('switch', { name: 'Vim mode' });
-  await settings.getByText('Vim mode', { exact: true }).click();
+  await settings.getByRole('option', { name: 'Редактор', exact: true }).click();
+  const vimSwitch = settings.getByRole('switch', { name: 'Режим Vim' });
+  await settings.getByText('Режим Vim', { exact: true }).click();
   await expect(vimSwitch).toBeChecked();
   await vimSwitch.press('Space');
   await expect(vimSwitch).not.toBeChecked();

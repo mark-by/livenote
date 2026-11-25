@@ -40,21 +40,14 @@ async function configureConnections(page, fixture) {
   const dialog = page.getByRole('dialog', { name: 'Настройки' });
   await visible(dialog.getByText('Тема Mermaid', { exact: true })).toBeVisible();
   await visible(dialog.getByText('Ширина страницы', { exact: true })).toBeVisible();
-  await visible(dialog.getByRole('switch', { name: 'Vim mode' })).toBeVisible();
+  await dialog.getByRole('option', { name: 'Редактор', exact: true }).click();
+  await visible(dialog.getByRole('switch', { name: 'Режим Vim' })).toBeVisible();
   await visible(dialog.getByRole('switch', { name: 'Следовать за изменениями' })).toBeVisible();
+  await dialog.getByRole('option', { name: 'Модель', exact: true }).click();
   const modelSection = dialog.getByRole('region', { name: 'Модель' });
   const confluence = dialog.getByRole('region', { name: 'Confluence' });
   await visible(modelSection).toBeVisible();
-  for (const name of ['Модель', 'Confluence', 'GitLab', 'GitHub']) {
-    const section = dialog.getByRole('region', { name });
-    await visible(section).toBeVisible();
-    await visible(section.getByLabel('Токен')).toHaveValue('');
-    if (name !== 'Модель') {
-      await visible(section.getByLabel('MCP endpoint')).toHaveValue('');
-      await visible(section.getByLabel('Resource host')).toHaveValue('');
-      await visible(section.getByRole('button', { name: 'Войти через браузер' })).toBeDisabled();
-    }
-  }
+  await visible(modelSection.getByLabel('Токен')).toHaveValue('');
   const evidence = await mkdtemp(join(tmpdir(), 'livenote-agent-browser-'));
   await page.screenshot({ path: join(evidence, 'пустые-подключения.png'), fullPage: true, animations: 'disabled' });
   await modelSection.getByLabel('Base URL').fill(`${fixture.base}/v1`);
@@ -63,6 +56,15 @@ async function configureConnections(page, fixture) {
   await modelSection.getByRole('button', { name: 'Сохранить подключение' }).click();
   await visible(modelSection.getByText('Подключено', { exact: true })).toBeVisible();
   await visible(modelSection.getByLabel('Токен')).toHaveValue('');
+  await dialog.getByRole('option', { name: 'Интеграции', exact: true }).click();
+  for (const name of ['GitLab', 'GitHub', 'Confluence']) {
+    await dialog.getByRole('tab', { name, exact: true }).click();
+    const section = dialog.getByRole('region', { name });
+    await visible(section.getByLabel('Токен')).toHaveValue('');
+    await visible(section.getByLabel('MCP endpoint')).toHaveValue('');
+    await visible(section.getByLabel('Resource host')).toHaveValue('');
+    await visible(section.getByRole('button', { name: 'Войти через браузер' })).toBeDisabled();
+  }
   await confluence.getByLabel('MCP endpoint').fill(`${fixture.base}/mcp`);
   await confluence.getByLabel('Resource host').fill(fixture.resourceHost);
   await confluence.getByLabel('Токен').fill(fixture.token);
@@ -70,6 +72,7 @@ async function configureConnections(page, fixture) {
   await visible(confluence.getByText('Подключено', { exact: true })).toBeVisible();
   await visible(confluence.getByLabel('Токен')).toHaveValue('');
   await page.setViewportSize({ width: 390, height: 844 });
+  await dialog.getByRole('tab', { name: 'GitHub', exact: true }).click();
   await visible(dialog.getByRole('region', { name: 'GitHub' })).toBeVisible();
   await page.screenshot({ path: join(evidence, 'подключения-мобильные.png'), fullPage: true, animations: 'disabled' });
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -98,6 +101,7 @@ async function openDiagramChat(t, fixture) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(browserTimeout);
   await login(page, host);
+  await page.getByRole('button', { name: 'Чат агента', exact: true }).click();
   const panel = page.getByRole('complementary', { name: 'Чат агента' });
   await panel.getByRole('button', { name: 'Новый разговор', exact: true }).first().click();
   await visible(panel.getByRole('heading', { name: 'Спросите о проекте' })).toBeVisible();
@@ -123,6 +127,7 @@ test('Чат LiveNote через Rust HTTP: подключает источни�
   await login(page, host);
   const panel = page.getByRole('complementary', { name: 'Чат агента' });
   const evidence = await configureConnections(page, fixture);
+  await page.getByRole('button', { name: 'Чат агента', exact: true }).click();
   t.diagnostic(`Общее меню открыло настройки. Модель и Confluence настроены через диалог. Снимки: ${evidence}`);
   const empty = panel.getByRole('heading', { name: 'Начните разговор' });
   await visible(empty).toBeVisible();

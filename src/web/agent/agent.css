@@ -189,17 +189,7 @@
 .agent-binding__folder { margin: 0 0 var(--space-4); color: var(--muted); overflow-wrap: anywhere; }
 .agent-binding__local { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-2); }
 .agent-binding__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.agent-context { display: flex; flex-direction: column; gap: var(--space-3); }
-.agent-context > h3 { margin: 0; font-size: var(--text-lg); }
-.agent-connections { display: flex; flex-direction: column; gap: var(--space-5); }
-.agent-connections > h3 { margin: 0; font-size: var(--text-lg); }
-.agent-connection { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--separator); }
-.agent-connection__heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.agent-connection__heading h4 { margin: 0; font-size: var(--text-base); }
-.agent-connection__heading span { color: var(--muted); font-size: var(--text-sm); }
-.agent-connection__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.agent-connection__note { margin: 0; color: var(--muted); font-size: var(--text-xs); }
 @media (max-width: 50rem) {
   .vault-workspace[data-agent-open='true'] { grid-template-columns: minmax(0, 1fr); }
-  .vault-workspace > :is(.agent-chat, .agent-resizer, .agent-panel-host) { display: none; }
+  .vault-workspace > .agent-resizer { display: none; }
 }

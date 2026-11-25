@@ -18,14 +18,11 @@ export const sessionOne = '11111111-1111-4111-8111-111111111111';
 const sessionTwo = '22222222-2222-4222-8222-222222222222';
 export const turnOne = '33333333-3333-4333-8333-333333333333';
 const at = '2026-11-20T12:00:00Z';
-const agentBase = `/api/vaults/${vaultId}/agent`;
 const fixtureModule = `
   import React, { StrictMode, useState } from 'react';
   import { createRoot } from 'react-dom/client';
   import { AgentBindingDialog } from '/agent/AgentBindingDialog.tsx';
   import { AgentChatPanel } from '/agent/AgentChatPanel.tsx';
-  import { AgentConnectionsSettings } from '/agent/AgentConnectionsSettings.tsx';
-  import { AgentContextSettings } from '/agent/AgentContextSettings.tsx';
   import { useAgentChat } from '/agent/useAgentChat.ts';
   import { SettingsDialog } from '/components/SettingsDialog.tsx';
   import { VaultEditors } from '/vault/VaultEditors.tsx';
@@ -39,6 +36,7 @@ const fixtureModule = `
     const workspace = useVaultWorkspace(false, false, null, false);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [bindingOpen, setBindingOpen] = useState(false);
+    const [vimEnabled, setVimEnabled] = useState(false);
     const agentWorkspace = {
       ...workspace,
       captureAgentFocus: async () => {
@@ -69,14 +67,12 @@ const fixtureModule = `
       })),
       settingsOpen && React.createElement(SettingsDialog, {
         pageWidth: 'standard', onPageWidthChange() {}, followEvents: false, onFollowChange() {},
+        vimEnabled, onVimEnabledChange: setVimEnabled,
         onClose: () => setSettingsOpen(false),
-        agentConnections: React.createElement(React.Fragment, null,
-          React.createElement(AgentContextSettings, {
-            value: agentChat.contextLimitTokens, onChange: agentChat.setContextLimitTokens,
-            search: agentChat.search, onSearchChange: agentChat.setSearch
-          }),
-          React.createElement(AgentConnectionsSettings, { vaultId: '${vaultId}' })
-        )
+        agent: {
+          vaultId: '${vaultId}', value: agentChat.contextLimitTokens, onChange: agentChat.setContextLimitTokens,
+          search: agentChat.search, onSearchChange: agentChat.setSearch
+        }
       }),
       bindingOpen && React.createElement(AgentBindingDialog, {
         vaultId: '${vaultId}', folder: 'services/storage', onClose: () => setBindingOpen(false)
@@ -123,7 +119,8 @@ export async function startAgentChatFixture({ token = null, realApp = false } = 
   const vault = join(temp, 'vault');
   await mkdir(vault);
   await writeFile(join(vault, 'note.md'), '# Заметка\n');
-  let browser, server, app, vite, base;
+  let browser, server, app, vite, base, defaultVaultId;
+  let agentBase = `/api/vaults/${vaultId}/agent`;
 
   async function agentRequest(req, res) {
     const url = new URL(req.url, 'http://fixture');
@@ -182,11 +179,11 @@ export async function startAgentChatFixture({ token = null, realApp = false } = 
 
   async function handleFixtureRequest(req, res) {
     const { pathname } = new URL(req.url ?? '/', 'http://fixture');
-    if (realApp && pathname === '/api/config') {
+    if (realApp && defaultVaultId && pathname === '/api/config') {
       // Настольный конфиг: agentChat включает панель, tokenRequired показывает форму входа.
       return send(res, 200, {
         version: 'fixture', tokenRequired: token !== null, mermaidTheme: 'default',
-        storage: 'vault', agentChat: true, folderPickerAvailable: false
+        storage: 'vault', defaultVaultId, agentChat: true, folderPickerAvailable: true
       });
     }
     if (pathname === '/') {
@@ -216,6 +213,11 @@ export async function startAgentChatFixture({ token = null, realApp = false } = 
   base = `http://127.0.0.1:${port}`;
   app = await createApp({ port, host: '127.0.0.1', vaultPath: vault,
     dbPath: join(temp, 'unused.sqlite'), openBrowser: false, token, mermaidTheme: 'default' }, { cacheHome: join(temp, 'cache') });
+  if (realApp) {
+    ({ defaultVaultId } = await (await fetch(`${base}/api/config`)).json());
+    assert.ok(defaultVaultId);
+    agentBase = `/api/vaults/${encodeURIComponent(defaultVaultId)}/agent`;
+  }
   vite = await createVite({
     configFile: false, root: join(process.cwd(), 'src/web'), cacheDir: join(temp, 'vite'), appType: 'custom',
     server: { middlewareMode: true, hmr: false, fs: { allow: [process.cwd()] } },
@@ -252,6 +254,7 @@ export async function startAgentChatFixture({ token = null, realApp = false } = 
   async function open(t) {
     const page = await newPage(t);
     await page.goto(base);
+    await page.getByRole('button', { name: 'Показать чат', exact: true }).click();
     const panel = page.getByRole('complementary', { name: 'Чат агента' });
     await expect(panel).toBeVisible({ timeout: assertionTimeout });
     await expect(panel.getByText('Старый ответ')).toBeVisible();
@@ -259,9 +262,10 @@ export async function startAgentChatFixture({ token = null, realApp = false } = 
   }
 
   /** Реальный VaultApp за формой входа: panel отсутствует до ввода токена. */
-  async function openLogin(t) {
+  async function openLogin(t, platform) {
     const page = await newPage(t);
-    await page.goto(`${base}/?vault_id=${encodeURIComponent(vaultId)}`);
+    if (platform) await page.addInitScript(value => Object.defineProperty(navigator, 'platform', { value }), platform);
+    await page.goto(base);
     const dialog = page.getByRole('dialog', { name: 'LiveNote защищён токеном' });
     await expect(dialog).toBeVisible({ timeout: assertionTimeout });
     return { page, dialog };

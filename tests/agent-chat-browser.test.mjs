@@ -26,16 +26,137 @@ test('Чат агента не запрашивает данные до вход
   // Assert: за формой входа ноль запросов к агентским маршрутам.
   assert.equal(loginState.requests.length, 0);
   await expect(page.getByRole('complementary', { name: 'Чат агента' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Чат агента', exact: true })).toHaveCount(0);
   await loginFixture.shot(page, 'agent-login-gate');
   // Act: войти штатной формой.
   await dialog.getByLabel('Токен').fill(loginToken);
   await dialog.getByRole('button', { name: 'Открыть' }).click();
-  // Assert: панель смонтирована и загрузила историю из agent-маршрутов.
+  // Assert: после входа чат скрыт, но его можно открыть даже без активной заметки.
   const panel = page.getByRole('complementary', { name: 'Чат агента' });
+  const toggle = page.getByRole('button', { name: 'Чат агента', exact: true });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(panel).toBeHidden();
+  await page.getByRole('navigation', { name: 'Файлы хранилища' }).getByRole('button', { name: 'note', exact: true }).click();
+  const status = page.getByRole('group', { name: 'Состояние активного редактора' });
+  await expect(status.getByRole('button', { name: /Связанные заметки/ })).toBeVisible();
+  await expect(status.getByRole('button', { name: 'Чат агента', exact: true })).toBeVisible();
+  await loginFixture.shot(page, 'agent-status-light-closed');
+
+  await toggle.press('Space');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(panel).toBeVisible({ timeout: assertionTimeout });
   await expect(panel.getByText('Старый ответ')).toBeVisible();
   await expect(panel.getByRole('button', { name: /История разговоров/ })).toContainText('Первый разговор');
-  await loginFixture.shot(page, 'agent-after-login');
+  await page.reload();
+  await expect(panel).toBeVisible();
+
+  const menuButton = page.getByRole('button', { name: 'Меню LiveNote' });
+  await menuButton.click();
+  const menu = page.getByRole('menu', { name: 'Меню LiveNote' });
+  await expect(menu.getByRole('menuitem')).toHaveText(['Открыть папку', 'Тёмная тема', 'Настройки']);
+  await loginFixture.shot(page, 'agent-status-light-menu');
+  await menu.getByRole('menuitem', { name: 'Тёмная тема' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await loginFixture.shot(page, 'agent-status-dark-open');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(toggle).toBeInViewport();
+  await expect(panel).toBeInViewport();
+  await loginFixture.shot(page, 'agent-status-mobile-dark-open');
+  await toggle.click();
+  await expect(panel).toBeHidden();
+  await page.reload();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(panel).toBeHidden();
+  await loginFixture.shot(page, 'agent-status-mobile-dark-closed');
+});
+
+test('Горячие клавиши видны в настройках и переключают панель агента вне диалогов', { timeout }, async t => {
+  const app = await startAgentChatFixture({ token: loginToken, realApp: true });
+  t.after(() => app.close());
+  app.reset();
+  const { page, dialog: login } = await app.openLogin(t, 'MacIntel');
+  await login.getByLabel('Токен').fill(loginToken);
+  await login.getByRole('button', { name: 'Открыть' }).click();
+  const toggle = page.getByRole('button', { name: 'Чат агента', exact: true });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('Meta+,');
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  const search = dialog.getByRole('searchbox', { name: 'Поиск настроек' });
+  await search.fill('hotkeys');
+  await dialog.getByRole('button', { name: /Назад по истории файлов/ }).click();
+  await expect(dialog.getByRole('heading', { name: 'Горячие клавиши' })).toBeFocused();
+  for (const [action, keys] of [
+    ['Назад по истории файлов', '⌘['],
+    ['Вперёд по истории файлов', '⌘]'],
+    ['Открыть или закрыть панель агента', '⌘P'],
+    ['Открыть настройки', '⌘,']
+  ]) {
+    await expect(dialog.getByRole('listitem').filter({ hasText: action }).locator('kbd')).toHaveText(keys);
+  }
+  await app.shot(page, 'hotkeys-desktop-light');
+  await page.keyboard.press('Meta+p');
+  await dialog.getByRole('button', { name: 'Готово' }).click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+  await page.keyboard.press('Meta+p');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  const panel = page.getByRole('complementary', { name: 'Чат агента' });
+  await expect(panel).toBeVisible();
+  await panel.getByRole('textbox', { name: 'Сообщение агенту' }).press('Meta+p');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(panel).toBeHidden();
+});
+
+test('Горячие клавиши можно переназначить, сохранить и сбросить', { timeout }, async t => {
+  const app = await startAgentChatFixture({ token: loginToken, realApp: true });
+  t.after(() => app.close());
+  app.reset();
+  const { page, dialog: login } = await app.openLogin(t, 'MacIntel');
+  await login.getByLabel('Токен').fill(loginToken);
+  await login.getByRole('button', { name: 'Открыть' }).click();
+  const toggle = page.getByRole('button', { name: 'Чат агента', exact: true });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  const selectHotkeys = () => dialog.getByRole('option', { name: 'Горячие клавиши' }).click();
+
+  await page.keyboard.press('Meta+,');
+  await selectHotkeys();
+  const agentBinding = dialog.getByRole('button', { name: /Изменить сочетание: Открыть или закрыть панель агента/ });
+  await agentBinding.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog.getByText(/Нажмите новое сочетание/)).toBeVisible();
+  await app.shot(page, 'hotkeys-recording');
+  await page.keyboard.press('Meta+[');
+  await expect(dialog.getByRole('alert')).toContainText('Назад по истории файлов');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(agentBinding).toContainText('⌘P');
+
+  await agentBinding.click();
+  await page.keyboard.press('Meta+Shift+Y');
+  await expect(agentBinding).toContainText('⌘⇧Y');
+  await dialog.getByRole('button', { name: /Изменить сочетание: Открыть настройки/ }).click();
+  await page.keyboard.press('Meta+Shift+U');
+  await dialog.getByRole('button', { name: 'Готово' }).click();
+  await page.keyboard.press('Meta+p');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('Meta+Shift+Y');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.reload();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Meta+Shift+Y');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('Meta+Shift+U');
+  await selectHotkeys();
+  await expect(agentBinding).toContainText('⌘⇧Y');
+  await dialog.getByRole('button', { name: 'Восстановить по умолчанию' }).click();
+  await expect(agentBinding).toContainText('⌘P');
+  await dialog.getByRole('button', { name: 'Готово' }).click();
+  await page.keyboard.press('Meta+p');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Meta+,');
+  await expect(dialog).toBeVisible();
 });
 
 test('Отправка захватывает контекст, опрашивает скрытое сообщение и показывает ссылку', { timeout }, async t => {
@@ -78,6 +199,7 @@ test('Настройка контекста сохраняется и попад
   const { page, panel } = await open(t);
   await page.getByRole('button', { name: 'Открыть настройки' }).click();
   let dialog = page.getByRole('dialog', { name: 'Настройки' });
+  await dialog.getByRole('option', { name: 'Контекст', exact: true }).click();
   let field = dialog.getByRole('textbox', { name: /Лимит контекста агента/ });
   await expect(field).toHaveValue('65536');
 
@@ -87,6 +209,7 @@ test('Настройка контекста сохраняется и попад
   await page.reload();
   await page.getByRole('button', { name: 'Открыть настройки' }).click();
   dialog = page.getByRole('dialog', { name: 'Настройки' });
+  await dialog.getByRole('option', { name: 'Контекст', exact: true }).click();
   field = dialog.getByRole('textbox', { name: /Лимит контекста агента/ });
 
   // Assert: localStorage восстановил значение в обеих темах и на узком экране.
@@ -417,10 +540,13 @@ test('Настройки показывают ошибку загрузки бе
   // Act: открыть общие настройки.
   await page.getByRole('button', { name: 'Открыть настройки' }).click();
   const dialog = page.getByRole('dialog', { name: 'Настройки' });
-  const connections = dialog.getByRole('region', { name: 'Подключения агента' });
+  await dialog.getByRole('option', { name: 'Модель', exact: true }).click();
   // Assert: ошибка находится вне регионов слотов, которые не загрузились.
-  await expect(connections.getByRole('alert')).toContainText('Хранилище подключений недоступно.');
-  await expect(connections.getByRole('region', { name: 'Модель' })).toHaveCount(0);
+  await expect(dialog.getByRole('alert')).toContainText('Хранилище подключений недоступно.');
+  await expect(dialog.getByRole('region', { name: 'Модель' })).toHaveCount(0);
+  state.connectionsError = false;
+  await dialog.getByRole('button', { name: 'Повторить загрузку' }).click();
+  await expect(dialog.getByRole('region', { name: 'Модель' })).toBeVisible();
 });
 
 test('Настройки сохраняют модель и токен без показа секрета', { timeout }, async t => {
@@ -428,6 +554,7 @@ test('Настройки сохраняют модель и токен без п
   const { page } = await open(t);
   await page.getByRole('button', { name: 'Открыть настройки' }).click();
   const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  await dialog.getByRole('option', { name: 'Модель', exact: true }).click();
   const model = dialog.getByRole('region', { name: 'Модель' });
   await expect(model).toBeVisible();
   // Act: изменить адрес, модель и тестовый токен, затем сохранить.
@@ -436,10 +563,10 @@ test('Настройки сохраняют модель и токен без п
   await model.getByLabel('Токен').fill('test-token-not-secret');
   await model.getByRole('button', { name: 'Сохранить подключение' }).click();
   // Assert: wire-форма содержит token, поле очищено, статус пришёл из ответа.
+  await expect(model.getByLabel('Токен')).toHaveValue('');
   const put = state.requests.find(item => item.path === '/connections/model' && item.method === 'PUT');
   assert.deepEqual(put.body.profile, { kind: 'model', baseUrl: 'http://127.0.0.1:9999/v1', model: 'fixture-next' });
   assert.deepEqual(put.body.secret, { kind: 'token', value: 'test-token-not-secret' });
-  await expect(model.getByLabel('Токен')).toHaveValue('');
   await expect(model.getByText('Подключено', { exact: true })).toBeVisible();
   await shot(page, 'settings-desktop-light');
 });
@@ -448,14 +575,150 @@ test('OAuth сохраняет clientId и запускает серверный
   // Arrange: открыт раздел GitHub с пустым секретом.
   const { page } = await open(t);
   await page.getByRole('button', { name: 'Открыть настройки' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  await dialog.getByRole('option', { name: 'Интеграции', exact: true }).click();
+  await dialog.getByRole('tab', { name: 'GitHub', exact: true }).click();
   const github = page.getByRole('region', { name: 'GitHub' });
   // Act: сохранить публичный clientId и вызвать OAuth.
   await github.getByLabel('OAuth client ID').fill('fixture-public-client');
   await github.getByRole('button', { name: 'Войти через браузер' }).click();
   // Assert: сначала PUT с oauth, затем POST без секретов в теле.
+  await expect.poll(() => state.requests.some(item => item.path === '/connections/github/oauth' && item.method === 'POST')).toBe(true);
   const put = state.requests.find(item => item.path === '/connections/github' && item.method === 'PUT');
   assert.deepEqual(put.body.secret, { kind: 'oauth', clientId: 'fixture-public-client' });
-  await expect.poll(() => state.requests.some(item => item.path === '/connections/github/oauth' && item.method === 'POST')).toBe(true);
   const oauth = state.requests.find(item => item.path === '/connections/github/oauth');
   assert.deepEqual(oauth.body, {});
+});
+
+test('Поиск настроек открывает нужное поле и возвращает фокус после закрытия', { timeout }, async t => {
+  const { page } = await open(t);
+  const trigger = page.getByRole('button', { name: 'Открыть настройки' });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  const search = dialog.getByRole('searchbox', { name: 'Поиск настроек' });
+  await expect(dialog.getByRole('option', { name: 'Внешний вид' })).toHaveAttribute('aria-selected', 'true');
+  await search.fill('никаких совпадений');
+  await expect(dialog.getByRole('status')).toContainText('Ничего не найдено');
+  await search.fill('оформление диаграмм');
+  await expect(dialog.getByRole('button', { name: /Тема Mermaid/ })).toBeVisible();
+  await search.press('Enter');
+  const mermaid = dialog.getByRole('button', { name: /Тема Mermaid/ });
+  await expect(mermaid).toBeFocused();
+  await mermaid.click();
+  await page.getByRole('option', { name: 'forest', exact: true }).click();
+  await expect(mermaid).toContainText('forest');
+  await mermaid.click();
+  await page.getByRole('option', { name: 'Как на сервере', exact: true }).click();
+  await expect(mermaid).toContainText('Как на сервере');
+  await expect(mermaid).toBeFocused();
+  await expect(mermaid).toHaveAttribute('aria-expanded', 'false');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
+test('На узком экране разделы и интеграции сохраняют черновики без записи на сервер', { timeout }, async t => {
+  const { page } = await open(t);
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.getByRole('button', { name: 'Открыть настройки' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  await expect(dialog.getByRole('navigation', { name: 'Разделы настроек' })).toBeVisible();
+  await shot(page, 'settings-nav-390-light');
+  await dialog.getByRole('button', { name: 'Интеграции', exact: true }).click();
+  const confluence = dialog.getByRole('region', { name: 'Confluence' });
+  await confluence.getByLabel('Resource host').fill('draft.fixture');
+  await dialog.getByRole('tab', { name: 'GitHub' }).click();
+  await expect(dialog.getByRole('region', { name: 'GitHub' }).getByLabel('Resource host')).toHaveValue('github.fixture');
+  await dialog.getByRole('button', { name: 'Назад к разделам' }).click();
+  await expect(dialog.getByRole('button', { name: 'Интеграции', exact: true })).toBeFocused();
+  await dialog.getByRole('searchbox', { name: 'Поиск настроек' }).fill('confluence');
+  await dialog.getByRole('button', { name: /Confluence/ }).click();
+  await expect(confluence.getByLabel('Resource host')).toHaveValue('draft.fixture');
+  await expect(dialog.getByRole('tab', { name: 'Confluence' })).toHaveAttribute('aria-selected', 'true');
+  const geometry = await dialog.evaluate(node => {
+    const scroll = node.querySelector('[data-settings-content]');
+    return { dialogWidth: node.clientWidth, scrollWidth: scroll.scrollWidth, viewWidth: scroll.clientWidth,
+      verticallyScrollable: scroll.scrollHeight > scroll.clientHeight };
+  });
+  assert.equal(geometry.dialogWidth, 390);
+  assert.equal(geometry.scrollWidth, geometry.viewWidth);
+  assert.equal(geometry.verticallyScrollable, true);
+  await dialog.getByRole('button', { name: 'Готово' }).click();
+  await expect(dialog).toBeHidden();
+  assert.deepEqual(state.requests.filter(item => item.method === 'PUT'), []);
+  await page.getByRole('button', { name: 'Открыть настройки' }).click();
+  await dialog.getByRole('button', { name: 'Интеграции', exact: true }).click();
+  await expect(confluence.getByLabel('Resource host')).toHaveValue('confluence.fixture');
+});
+
+test('В каждом списке настроек галочка отмечает только выбранный вариант', { timeout }, async t => {
+  const { page } = await open(t);
+  await page.getByRole('button', { name: 'Открыть настройки' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  for (const [label, initial] of [['Ширина страницы', 'Обычная'], ['Тема Mermaid', 'Как на сервере']]) {
+    const trigger = dialog.getByRole('button', { name: new RegExp(label) });
+    await trigger.click();
+    const list = page.getByRole('listbox').filter({ has: page.getByRole('option', { name: initial, exact: true }) });
+    const selected = list.getByRole('option', { selected: true });
+    const icon = '[data-slot="list-box-item-indicator"] svg';
+    await expect(selected).toHaveAccessibleName(initial);
+    await expect(selected.locator(icon)).toBeVisible();
+    await expect(list.getByRole('option', { selected: false }).locator(`${icon}:visible`)).toHaveCount(0);
+    await shot(page, `settings-select-${initial === 'Обычная' ? 'width' : 'mermaid'}-light`);
+    if (initial === 'Как на сервере') {
+      await list.getByRole('option', { name: 'forest', exact: true }).click();
+      await expect(list).toBeHidden();
+      await expect(trigger).toBeFocused();
+      await trigger.click();
+      await expect(selected).toHaveAccessibleName('forest');
+      await expect(selected.locator(icon)).toBeVisible();
+      await expect(list.getByRole('option', { selected: false }).locator(`${icon}:visible`)).toHaveCount(0);
+    }
+    await selected.press('Escape');
+    await expect(list).toBeHidden();
+  }
+});
+
+test('Настройки сохраняют фиксированную рамку и центрируют иконки в обеих темах', { timeout }, async t => {
+  const { page } = await open(t);
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => {
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.classList.toggle('dark', theme === 'dark');
+    }, theme);
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 700 });
+      await page.getByRole('button', { name: 'Открыть настройки' }).click();
+      const role = width >= 800 ? 'option' : 'button';
+      const choose = name => dialog.getByRole(role, { name, exact: true });
+      if (width < 800 && width === 390) await shot(page, `settings-navigation-${width}-${theme}`);
+      for (const [section, title] of [['Внешний вид', 'appearance'], ['Редактор', 'editor'], ['Контекст', 'context'],
+        ['Модель', 'model'], ['Интеграции', 'integrations']]) {
+        await choose(section).click();
+        await expect(dialog.getByRole('heading', { name: section, exact: true }).last()).toBeAttached();
+        if (section === 'Модель') await expect(dialog.getByRole('region', { name: section })).toBeVisible();
+        if (section === 'Интеграции') await expect(dialog.getByRole('region', { name: 'Confluence' })).toBeVisible();
+        const frame = await dialog.evaluate(node => {
+          const box = node.getBoundingClientRect();
+          const scroller = node.querySelector('[data-settings-content]');
+          const close = node.querySelector('[aria-label="Закрыть настройки"]');
+          const a = close.getBoundingClientRect(), b = close.querySelector('svg').getBoundingClientRect();
+          return {
+            width: Math.round(box.width), height: Math.round(box.height), overflows: scroller.scrollWidth > scroller.clientWidth,
+            dy: Math.abs(a.top + a.height / 2 - b.top - b.height / 2), icon: b.height
+          };
+        });
+        assert.equal(frame.width, Math.min(width, 1000));
+        assert.equal(frame.height, width >= 800 ? 636 : 700);
+        assert.equal(frame.overflows, false);
+        assert.equal(frame.icon, 16);
+        assert.ok(frame.dy <= 1, `Иконка смещена на ${frame.dy} px`);
+        if (width !== 320) await shot(page, `settings-${title}-${width}-${theme}`);
+        if (width < 800) await dialog.getByRole('button', { name: 'Назад к разделам' }).click();
+      }
+      await dialog.getByRole('button', { name: 'Закрыть настройки' }).click();
+      await expect(dialog).toBeHidden();
+    }
+  }
 });

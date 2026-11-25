@@ -31,7 +31,7 @@ const key = (vaultId: string): string => `livenote_agent_panel:${encodeURICompon
 
 export function loadAgentPreferences(vaultId: string): AgentPanelPreferences {
   const fallback: AgentPanelPreferences = {
-    open: true, followAgent: false, width: AGENT_DEFAULT_WIDTH, sessionId: null, drafts: {},
+    open: false, followAgent: false, width: AGENT_DEFAULT_WIDTH, sessionId: null, drafts: {},
     contextLimitTokens: AGENT_DEFAULT_CONTEXT_LIMIT_TOKENS, search: 'docsFirst'
   };
   try {
@@ -44,7 +44,7 @@ export function loadAgentPreferences(vaultId: string): AgentPanelPreferences {
     }
     const contextLimitTokens = record['contextLimitTokens'];
     return {
-      open: record['open'] !== false,
+      open: record['open'] === true,
       followAgent: record['followAgent'] === true,
       width: typeof record['width'] === 'number' && Number.isFinite(record['width']) ? clampAgentWidth(record['width']) : AGENT_DEFAULT_WIDTH,
       sessionId: typeof record['sessionId'] === 'string' ? record['sessionId'] : null,

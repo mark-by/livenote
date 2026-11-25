@@ -20,7 +20,7 @@ interface AgentChatOptions {
 
 export function useAgentChat({ vaultId, workspace, enabled }: AgentChatOptions) {
   const [preferences] = useState(() => vaultId === null ? null : loadAgentPreferences(vaultId));
-  const [open, setOpen] = useState(preferences?.open ?? true);
+  const [open, setOpen] = useState(preferences?.open ?? false);
   const [followAgent, setFollowAgent] = useState(preferences?.followAgent ?? false);
   const [width, setWidth] = useState(preferences?.width ?? AGENT_DEFAULT_WIDTH);
   const [selectedId, setSelectedId] = useState<string | null>(preferences?.sessionId ?? null);

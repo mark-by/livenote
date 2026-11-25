@@ -4,6 +4,7 @@ import { CloseButton } from '@heroui/react';
 import type { EditorVimMode } from '../editor/LivePreviewEditor';
 import { VaultDocumentLoading, VaultDocumentView } from './VaultDocumentView';
 import { VaultEditorStatus } from './VaultEditorStatus';
+import type { AgentToggleState } from './VaultEditorStatus';
 import { VaultPaneDivider } from './VaultPaneDivider';
 import type { VaultWorkspace } from './useVaultWorkspace';
 import { positionPaneLayout } from './vaultPaneState';
@@ -38,18 +39,20 @@ function VaultPaneFrame({ pane, workspace, title, visible = true, children }: {
   </div>;
 }
 
-export function VaultEditors({ workspace, theme, vimEnabled, onRevealFolder, agentPanel }: {
+export function VaultEditors({ workspace, theme, vimEnabled, onRevealFolder, agentPanel, agentToggle }: {
   readonly workspace: VaultWorkspace;
   readonly theme: 'light' | 'dark';
   readonly vimEnabled: boolean;
   readonly onRevealFolder: (path: string) => void;
   readonly agentPanel?: ReactNode;
+  readonly agentToggle?: AgentToggleState;
 }): React.JSX.Element {
   const { activeId, paneLayout } = workspace;
   const [vimModes, setVimModes] = useState<ReadonlyMap<string, EditorVimMode>>(() => new Map());
   const { panes, splits } = positionPaneLayout(paneLayout?.root);
   const paneByPath = new Map(panes.map(pane => [pane.path, pane]));
   const activeDocument = activeId === null ? undefined : workspace.documents[activeId];
+  const activeNote = activeDocument && formatForPath(activeDocument.path) === 'markdown' ? activeDocument : undefined;
   return <main className="vault-main">
     <div className="vault-editor-area">
       {workspace.openTabs.map(path => {
@@ -80,9 +83,9 @@ export function VaultEditors({ workspace, theme, vimEnabled, onRevealFolder, age
         : !paneLayout && !activeDocument && (activeId !== null || !workspace.ready ? <VaultDocumentLoading />
           : <div className="vault-welcome"><h1>Начните с заметки</h1><p>Выберите файл слева или создайте Markdown-документ в текущей папке.</p></div>)}
     </div>
-    {activeDocument && formatForPath(activeDocument.path) === 'markdown' && <VaultEditorStatus
-      key={activeDocument.path} backlinks={activeDocument.backlinks}
-      vimMode={vimEnabled ? vimModes.get(activeDocument.path) ?? 'normal' : undefined}
-      onNavigate={workspace.openPage} />}
+    {(activeNote || agentToggle) && <VaultEditorStatus key={activeNote?.path}
+      backlinks={activeNote?.backlinks}
+      vimMode={activeNote && vimEnabled ? vimModes.get(activeNote.path) ?? 'normal' : undefined}
+      onNavigate={workspace.openPage} agentToggle={agentToggle} />}
   </main>;
 }

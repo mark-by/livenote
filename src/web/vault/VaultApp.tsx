@@ -1,27 +1,26 @@
-import { useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Alert, Button, Drawer } from '@heroui/react';
-import { ArrowDownToSquare, ArrowUpFromSquare, Bars, Comment, FolderOpen, Gear, LayoutSideContentLeft, Moon, Sun } from '@gravity-ui/icons';
+import { Bars, FolderOpen, Gear, LayoutSideContentLeft, Moon, Sun } from '@gravity-ui/icons';
 import { AgentBindingDialog } from '../agent/AgentBindingDialog';
 import { AgentChatPanel } from '../agent/AgentChatPanel';
-import { AgentConnectionsSettings } from '../agent/AgentConnectionsSettings';
-import { AgentContextSettings } from '../agent/AgentContextSettings';
 import { useAgentChat } from '../agent/useAgentChat';
 import '../agent/agent.css';
 import type { WebApiConfig } from '../api';
-import { exportAll, exportPage, importMarkdown, openVaultFolder, vaultLocationUrl } from '../api';
+import { openVaultFolder, vaultLocationUrl } from '../api';
 import { useConfirm } from '../components/ConfirmDialog';
 import { SettingsDialog } from '../components/SettingsDialog';
 import type { PageWidth } from '../components/SettingsDialog';
 import { TokenDialog } from '../components/TokenDialog';
+import { useShortcuts } from '../useShortcuts';
 import { VaultMenu } from './VaultControls';
-import { DiagnosticsDialog, VaultPathDialog } from './VaultDialogs';
+import { VaultPathDialog } from './VaultDialogs';
 import { VaultDocumentTabs } from './VaultDocumentTabs';
 import { VaultEditors } from './VaultEditors';
 import { VaultSidebar } from './VaultSidebar';
 import { VaultWorkspaceLayout } from './VaultWorkspaceLayout';
 import { useVaultFolderExpansion } from './useVaultFolderExpansion';
 import { useVaultWorkspace } from './useVaultWorkspace';
-import { fileStem, parentPath } from './vaultPaths';
+import { parentPath } from './vaultPaths';
 
 interface PathOperation {
   readonly kind: 'move' | 'move-folder';
@@ -36,8 +35,8 @@ interface VaultAppProps {
 
 export function VaultApp({ config, vaultId, vaultIdExplicit }: VaultAppProps): React.JSX.Element {
   const [treeOpen, setTreeOpen] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
   const [folderPickerPending, setFolderPickerPending] = useState(false);
   const [bindingFolder, setBindingFolder] = useState<string | null>(null);
   const [folderNotice, setFolderNotice] = useState<{ kind: 'pending' | 'error' | 'cancel'; text: string } | null>(null);
@@ -50,12 +49,14 @@ export function VaultApp({ config, vaultId, vaultIdExplicit }: VaultAppProps): R
   // Чат агента ждет входа: за формой токена его запросы получают 401 и портят панель.
   const agentEnabled = config.agentChat === true && vaultId !== null && !workspace.tokenOpen;
   const agentChat = useAgentChat({ vaultId, workspace, enabled: agentEnabled });
+  const setAgentOpen = agentChat.setOpen;
+  const toggleAgent = useCallback(() => setAgentOpen(open => !open), [setAgentOpen]);
+  useShortcuts({ openSettings, goBack: workspace.goBack, goForward: workspace.goForward,
+    toggleAgent: agentEnabled ? toggleAgent : undefined });
   const folderExpansion = useVaultFolderExpansion(vaultId);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => localStorage.getItem('livenote_color_theme') === 'dark' ? 'dark' : 'light');
   const [vimEnabled, setVimEnabled] = useState(() => localStorage.getItem('livenote_vim') === '1');
-  const fileRef = useRef<HTMLInputElement>(null);
   const { confirm, dialog } = useConfirm();
-  const activeDocument = workspace.activeId ? workspace.documents[workspace.activeId] : undefined;
 
   const revealFolder = (path: string): void => {
     const ancestors: string[] = [];
@@ -127,61 +128,36 @@ export function VaultApp({ config, vaultId, vaultIdExplicit }: VaultAppProps): R
     return workspace.move(operation.path, path);
   };
 
-  const importFile = async (file: File): Promise<void> => {
-    try {
-      const page = await importMarkdown({ title: fileStem(file.name), content: await file.text() });
-      workspace.openPage(page.id); await workspace.reload(page.id); await workspace.refresh();
-    } catch (error) { workspace.showError(error instanceof Error ? error.message : String(error)); }
-  };
-
   const agentPanel = agentEnabled ? <AgentChatPanel chat={agentChat} workspace={workspace}
-    onClose={() => agentChat.setOpen(false)} onOpenSettings={() => setSettingsOpen(true)} /> : undefined;
+    onClose={() => agentChat.setOpen(false)} onOpenSettings={openSettings} /> : undefined;
 
   return <div className="vault-app" data-page-width={pageWidth}>
     <VaultDocumentTabs workspace={workspace} treeToggle={
       <Button className="vault-mobile-tree vault-icon-button" aria-label="Открыть дерево заметок" variant="ghost" onPress={() => setTreeOpen(true)}><LayoutSideContentLeft aria-hidden="true" /></Button>
     } mainMenu={<VaultMenu label="Меню LiveNote" triggerIcon={Bars} onAction={(action) => {
         if (action === 'open-folder') void openFolder();
-        if (action === 'import') fileRef.current?.click();
-        if (action === 'export' && activeDocument) void exportPage(activeDocument.path);
-        if (action === 'export-all') void exportAll();
         if (action === 'theme') changeTheme();
-        if (action === 'settings') setSettingsOpen(true);
-        if (action === 'agent-chat') agentChat.setOpen(!agentChat.open);
-        if (action === 'diagnostics') setDiagnosticsOpen(true);
+        if (action === 'settings') openSettings();
       }} actions={[
         ...(config.folderPickerAvailable === true ? [{ id: 'open-folder', label: 'Открыть папку', icon: FolderOpen }] : []),
-        { id: 'import', label: 'Импорт Markdown', icon: ArrowDownToSquare },
-        { id: 'export', label: 'Экспорт документа', icon: ArrowUpFromSquare },
-        { id: 'export-all', label: 'Экспорт хранилища', icon: ArrowUpFromSquare },
         { id: 'theme', label: theme === 'dark' ? 'Светлая тема' : 'Тёмная тема', icon: theme === 'dark' ? Sun : Moon },
-        ...(workspace.snapshot.problems.length > 0 ? [{ id: 'diagnostics', label: 'Диагностика хранилища' }] : []),
-        { id: 'settings', label: 'Настройки', icon: Gear },
-        ...(agentEnabled ? [{ id: 'agent-chat', label: agentChat.open ? 'Скрыть чат агента' : 'Показать чат агента', icon: Comment }] : [])
+        { id: 'settings', label: 'Настройки', icon: Gear }
       ]} />} />
-    <input ref={fileRef} className="vault-visually-hidden" type="file" aria-hidden="true" tabIndex={-1} accept=".md,.markdown,text/markdown" onChange={(event) => {
-      const file = event.target.files?.[0]; if (file) void importFile(file); event.target.value = '';
-    }} />
     <VaultWorkspaceLayout sidebar={<VaultSidebar workspace={workspace} {...folderExpansion} onFileAction={(action, path) => void fileAction(action, path)} onFolderAction={(action, path) => void folderAction(action, path)} />}
       agentPanel={agentPanel} agentPanelOpen={agentEnabled && agentChat.open && workspace.agentDiagramPath === null}
       agentPanelWidth={agentChat.width} onAgentPanelWidthChange={agentChat.setWidth}>
-      <VaultEditors workspace={workspace} theme={theme} vimEnabled={vimEnabled} onRevealFolder={revealFolder} agentPanel={agentPanel} />
+      <VaultEditors workspace={workspace} theme={theme} vimEnabled={vimEnabled} onRevealFolder={revealFolder}
+        agentPanel={agentChat.open ? agentPanel : undefined} agentToggle={agentEnabled ? agentChat : undefined} />
     </VaultWorkspaceLayout>
     <Drawer.Backdrop isOpen={treeOpen} onOpenChange={setTreeOpen}><Drawer.Content placement="left" className="vault-mobile-drawer"><Drawer.Dialog aria-label="Дерево заметок">
       <Drawer.Header><Drawer.Heading>Файлы</Drawer.Heading><Drawer.CloseTrigger aria-label="Закрыть дерево" /></Drawer.Header><Drawer.Body><VaultSidebar workspace={workspace} {...folderExpansion} onNavigate={() => setTreeOpen(false)} onFileAction={(action, path) => void fileAction(action, path)} onFolderAction={(action, path) => void folderAction(action, path)} /></Drawer.Body>
     </Drawer.Dialog></Drawer.Content></Drawer.Backdrop>
-    <DiagnosticsDialog open={diagnosticsOpen} problems={workspace.snapshot.problems} onOpenChange={setDiagnosticsOpen} />
     {operation && <VaultPathDialog open title="Переместить" label="Путь" initialPath={operation.path} confirmLabel="Сохранить" onOpenChange={(open) => { if (!open) setOperation(null); }} onSubmit={submitOperation} />}
-    {settingsOpen && <SettingsDialog pageWidth={pageWidth} onPageWidthChange={(width) => { setPageWidth(width); localStorage.setItem('livenote_page_width', width); }} followEvents={follow} onFollowChange={(value) => { setFollow(value); localStorage.setItem('livenote_follow', value ? '1' : '0'); }} vimEnabled={vimEnabled} onVimEnabledChange={(value) => { setVimEnabled(value); localStorage.setItem('livenote_vim', value ? '1' : '0'); }}
-      agentConnections={agentEnabled && vaultId !== null ? <>
-        <AgentContextSettings
-          value={agentChat.contextLimitTokens}
-          onChange={agentChat.setContextLimitTokens}
-          search={agentChat.search}
-          onSearchChange={agentChat.setSearch}
-        />
-        <AgentConnectionsSettings vaultId={vaultId} />
-      </> : undefined} onClose={() => setSettingsOpen(false)} />}
+    {settingsOpen && <SettingsDialog vaultShortcuts pageWidth={pageWidth} onPageWidthChange={(width) => { setPageWidth(width); localStorage.setItem('livenote_page_width', width); }} followEvents={follow} onFollowChange={(value) => { setFollow(value); localStorage.setItem('livenote_follow', value ? '1' : '0'); }} vimEnabled={vimEnabled} onVimEnabledChange={(value) => { setVimEnabled(value); localStorage.setItem('livenote_vim', value ? '1' : '0'); }}
+      agent={agentEnabled && vaultId !== null ? {
+        vaultId, value: agentChat.contextLimitTokens, onChange: agentChat.setContextLimitTokens,
+        search: agentChat.search, onSearchChange: agentChat.setSearch
+      } : undefined} onClose={() => setSettingsOpen(false)} />}
     {bindingFolder !== null && vaultId !== null && <AgentBindingDialog vaultId={vaultId} folder={bindingFolder} onClose={() => setBindingFolder(null)} />}
     {workspace.tokenOpen && <TokenDialog onConfirm={workspace.confirmToken} />}
     {folderNotice && <Alert className="vault-global-error" color={folderNotice.kind === 'error' ? 'danger' : 'default'} role={folderNotice.kind === 'error' ? 'alert' : 'status'}><Alert.Content><Alert.Title>{folderNotice.kind === 'error' ? 'Не удалось открыть папку' : folderNotice.kind === 'pending' ? 'Ожидание выбора папки' : 'Выбор папки отменён'}</Alert.Title><Alert.Description>{folderNotice.text}</Alert.Description></Alert.Content>{folderNotice.kind !== 'pending' && <Button size="sm" variant="ghost" onPress={() => setFolderNotice(null)}>Закрыть</Button>}</Alert>}

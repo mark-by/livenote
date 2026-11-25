@@ -38,7 +38,7 @@ export function VaultWorkspaceLayout({ sidebar, children, agentPanel, agentPanel
     if (agentDrag.current) agentDrag.current.width = resized;
   };
 
-  return <div className="vault-workspace" style={style} data-agent-open={agentPanel !== undefined && agentPanelOpen ? 'true' : undefined}>
+  return <div className="vault-workspace relative" style={style} data-agent-open={agentPanel !== undefined && agentPanelOpen ? 'true' : undefined}>
     <Surface id={sidebarId} className="vault-sidebar" variant="default">{sidebar}</Surface>
     <div className="vault-sidebar-resizer" role="separator" tabIndex={0}
       aria-label="Ширина дерева заметок" aria-controls={sidebarId} aria-orientation="vertical"
@@ -113,7 +113,7 @@ export function VaultWorkspaceLayout({ sidebar, children, agentPanel, agentPanel
           resizeAgent(next);
         }}
       />
-      <div id={agentPanelId} className="agent-panel-host" hidden={!agentPanelOpen}>{agentPanel}</div>
+      <div id={agentPanelId} className="agent-panel-host max-[50rem]:absolute max-[50rem]:inset-x-0 max-[50rem]:top-0 max-[50rem]:bottom-10 max-[50rem]:z-2" hidden={!agentPanelOpen}>{agentPanel}</div>
     </>}
   </div>;
 }

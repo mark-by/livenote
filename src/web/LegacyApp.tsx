@@ -4,7 +4,7 @@
  * диалог ввода токена, диалог настроек.
  */
 import { Alert, Button, CloseButton, Spinner, Tabs } from '@heroui/react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApiConfig, LiveEvent, PageFull, PageSummary } from '../shared/types';
 import {
   ApiError,
@@ -28,6 +28,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import type { PageWidth } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
 import { TokenDialog } from './components/TokenDialog';
+import { useShortcuts } from './useShortcuts';
 
 const STORAGE_TABS = 'livenote_open_tabs';
 const STORAGE_ACTIVE = 'livenote_active_tab';
@@ -78,6 +79,8 @@ export function LegacyApp(): React.JSX.Element {
   // Сайдбар «Страницы»: скрывается/показывается иконкой в toolbar (сохраняется).
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => localStorage.getItem(STORAGE_SIDEBAR) !== '0');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  useShortcuts({ openSettings });
   const [globalError, setGlobalError] = useState<string | null>(null);
 
   // Модальные подтверждения (замена window.confirm): см. handleDeletePage.
@@ -484,7 +487,7 @@ export function LegacyApp(): React.JSX.Element {
           <Button
             className="btn--icon"
             variant="ghost"
-            onPress={() => setSettingsOpen(true)}
+            onPress={openSettings}
             aria-label="Настройки"
             aria-haspopup="dialog"
           >

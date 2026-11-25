@@ -19,11 +19,13 @@ after(async () => {
 async function openSettings(page) {
   await page.getByRole('button', { name: 'Меню LiveNote' }).click();
   await page.getByRole('menuitem', { name: 'Настройки', exact: true }).click();
-  return page.getByRole('dialog', { name: 'Настройки' });
+  const dialog = page.getByRole('dialog', { name: 'Настройки' });
+  await dialog.getByRole('option', { name: 'Редактор', exact: true }).click();
+  return dialog;
 }
 
 for (const setting of [
-  { name: 'Vim mode', key: 'livenote_vim' },
+  { name: 'Режим Vim', key: 'livenote_vim' },
   { name: 'Следовать за изменениями', key: 'livenote_follow' }
 ]) {
   for (const target of ['control', 'thumb', 'label', 'keyboard']) {

@@ -1,20 +1,26 @@
 import { useState } from 'react';
-import { Button, Popover } from '@heroui/react';
-import { Link } from '@gravity-ui/icons';
+import { Button, Popover, ToggleButton, Tooltip } from '@heroui/react';
+import { Comment, CommentFill, Link } from '@gravity-ui/icons';
 import type { VaultDocument } from '../../shared/types';
 import type { EditorVimMode } from '../editor/LivePreviewEditor';
 
 const vimLabels: Record<EditorVimMode, string> = { normal: 'Normal', insert: 'Insert', visual: 'Visual' };
 
-export function VaultEditorStatus({ backlinks, vimMode, onNavigate }: {
-  readonly backlinks: VaultDocument['backlinks'];
+export interface AgentToggleState {
+  readonly open: boolean;
+  readonly setOpen: (open: boolean) => void;
+}
+
+export function VaultEditorStatus({ backlinks, vimMode, onNavigate, agentToggle }: {
+  readonly backlinks?: VaultDocument['backlinks'];
   readonly vimMode: EditorVimMode | undefined;
   readonly onNavigate: (path: string) => void;
+  readonly agentToggle?: AgentToggleState;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   return <div className="vault-editor-status" role="group" aria-label="Состояние активного редактора">
     {vimMode && <span role="status">Vim · {vimLabels[vimMode]}</span>}
-    <Popover isOpen={open} onOpenChange={setOpen}>
+    {backlinks && <Popover isOpen={open} onOpenChange={setOpen}>
       <Button size="sm" variant="ghost" className="vault-editor-status__backlinks"
         aria-label={`Связанные заметки: ${backlinks.length}`}>
         <Link aria-hidden="true" />{backlinks.length}
@@ -33,6 +39,13 @@ export function VaultEditorStatus({ backlinks, vimMode, onNavigate }: {
             )}</div>}
         </Popover.Dialog>
       </Popover.Content>
-    </Popover>
+    </Popover>}
+    {agentToggle && <Tooltip delay={300}>
+      <ToggleButton aria-label="Чат агента" isIconOnly size="sm" variant="ghost"
+        isSelected={agentToggle.open} onChange={agentToggle.setOpen}>
+        {agentToggle.open ? <CommentFill aria-hidden="true" /> : <Comment aria-hidden="true" />}
+      </ToggleButton>
+      <Tooltip.Content placement="top end">{agentToggle.open ? 'Скрыть чат агента' : 'Показать чат агента'}</Tooltip.Content>
+    </Tooltip>}
   </div>;
 }
