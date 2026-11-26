@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tauri::{AppHandle, Url, WebviewUrl, WebviewWindowBuilder, Wry, webview::NewWindowResponse};
+use tauri::{
+    AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, Wry, webview::NewWindowResponse,
+};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
@@ -64,7 +66,12 @@ fn builder<'a>(
 }
 
 pub(super) async fn open(app: &AppHandle, shutdown: &CancellationToken) -> Result<()> {
-    let url = Url::parse(&format!("http://127.0.0.1:{}", super::server::PORT))?;
+    // Новый путь обходит HTML, уже сохранённый прошлой версией, не меняя origin.
+    let url = Url::parse(&format!(
+        "http://127.0.0.1:{}/livenote-{}.html",
+        super::server::PORT,
+        app.package_info().version
+    ))?;
     let (created, wait) = oneshot::channel();
     let handle = app.clone();
     let shutdown = shutdown.clone();

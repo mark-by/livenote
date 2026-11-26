@@ -739,21 +739,21 @@ textarea:focus-visible {
   line-height: 1.5;
 }
 
-.markdown-body table {
+.markdown-body--native-tables table {
   border-collapse: collapse;
   margin: var(--space-3) 0;
   width: 100%;
   font-size: var(--fs-sm);
 }
 
-.markdown-body th,
-.markdown-body td {
+.markdown-body--native-tables th,
+.markdown-body--native-tables td {
   border: 1px solid var(--border);
   padding: 6px 12px;
   text-align: left;
 }
 
-.markdown-body th {
+.markdown-body--native-tables th {
   background: var(--bg-hover);
   font-weight: 600;
 }

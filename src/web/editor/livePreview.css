@@ -41,6 +41,11 @@
   padding-inline: 0;
 }
 
+.live-preview-editor .cm-content:has(> [data-spoiler-from]) {
+  /* Высота должна меняться вместе со спойлером, чтобы CodeMirror переизмерял строки. */
+  min-block-size: 0;
+}
+
 .live-preview-editor .cm-selectionBackground {
   background: color-mix(in oklch, var(--accent) 24%, transparent) !important;
 }
@@ -105,9 +110,15 @@
 .live-preview-editor {
   --lp-code-keyword: var(--accent);
   --lp-code-type: color-mix(in oklch, var(--accent) 55%, var(--foreground));
-  --lp-code-string: color-mix(in oklch, var(--success) 30%, var(--foreground));
-  --lp-code-number: color-mix(in oklch, var(--warning) 25%, var(--foreground));
-  --lp-code-literal: color-mix(in oklch, var(--danger) 35%, var(--foreground));
+  --lp-code-string: var(--success-soft-foreground);
+  --lp-code-number: var(--warning-soft-foreground);
+  --lp-code-literal: var(--danger-soft-foreground);
+}
+
+.live-preview-editor:not(:where(.dark *, [data-theme="dark"] *)) {
+  --lp-code-string: color-mix(in oklab, var(--success) 58%, var(--foreground));
+  --lp-code-number: color-mix(in oklab, var(--warning) 55%, var(--foreground));
+  --lp-code-literal: color-mix(in oklab, var(--danger) 70%, var(--foreground));
 }
 
 .live-preview-editor .cm-line.lp-code-line {
@@ -153,6 +164,7 @@
 
 .lp-code-line :is(
   .tok-keyword,
+  .tok-propertyName,
   .tok-controlKeyword,
   .tok-moduleKeyword,
   .tok-operatorKeyword,

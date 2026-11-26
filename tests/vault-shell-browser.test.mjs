@@ -72,6 +72,31 @@ async function fixture(t, source = '# Заголовок\n\nТекст заме�
   return { page, id, suffix };
 }
 
+test('контекстное меню вставляет и редактирует спойлер без кнопки исходника', async (t) => {
+  const { page, id } = await fixture(t, '# Заметка\n\nПервый абзац.\n\nСледующий абзац.\n');
+  const article = page.locator(`.vault-document[data-page-id="${id}"]`);
+  const editor = article.locator('.cm-content');
+  await article.getByText('Первый абзац.', { exact: true }).click({ button: 'right', position: { x: 12, y: 8 } });
+  await page.getByRole('menuitem', { name: 'Добавить спойлер' }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.insertText('Детали');
+  await article.getByText('Следующий абзац.', { exact: true }).click();
+  const spoiler = article.getByRole('button', { name: 'Детали', exact: true });
+  await expect(spoiler).toBeVisible();
+  await expect(article.getByRole('button', { name: /Исходник/ })).toHaveCount(0);
+  await spoiler.click();
+  await expect(article.getByText('Текст спойлера', { exact: true })).toBeVisible();
+  await spoiler.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Редактировать спойлер' }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.insertText('Новые детали');
+  await article.getByText('Следующий абзац.', { exact: true }).click();
+  await expect(article.getByRole('button', { name: 'Новые детали', exact: true })).toBeVisible();
+  await expect.poll(async () => (await getDocument(id)).source).toBe(
+    '# Заметка\n\nПервый абзац.\n\n<details>\n<summary>Новые детали</summary>\n\nТекст спойлера\n\n</details>\n\nСледующий абзац.\n'
+  );
+});
+
 async function shot(page, name) {
   if (screenshots) await page.screenshot({ path: `${screenshots}/${name}.png`, fullPage: true, animations: 'disabled' });
 }
@@ -124,6 +149,24 @@ const tabTitles = (page) => page.locator('[role="tab"] .vault-tab__label');
 const tabsTimeout = 120_000;
 const mermaidDownloadTimeout = 90_000;
 const erDiagram = '# Схема\n\n```mermaid\nerDiagram\n  SECTOR {\n    int id PK\n    string name\n  }\n```\n';
+
+test('Свойства сохраняются в исходнике заметки и отменяются в редакторе', { timeout: tabsTimeout }, async t => {
+  const body = '# Заметка\r\n\r\nMarkdown с **выделением** и #api.\r\n';
+  const header = '\uFEFF---\r\n# Сохранить комментарий\r\ntitle: Original\r\ntags: [api]\r\naliases: [old]\r\n---\r\n\r\n';
+  const source = header + body;
+  const { page, id, suffix } = await fixture(t, source, { platform: 'Win32' });
+  const title = page.getByRole('textbox', { name: 'Значение title' });
+  await title.fill('New');
+  await title.press('Control+s');
+  await expect.poll(async () => (await getDocument(id)).source).toBe(source.replace('Original', '"New"'));
+  await expect(documentTab(page, suffix)).toBeVisible();
+  const editor = page.getByRole('textbox', { name: `Документ ${suffix}` });
+  await editor.focus();
+  await page.keyboard.press('Control+z');
+  await expect(title).toHaveValue('Original');
+  await page.keyboard.press('Control+s');
+  await expect.poll(async () => (await getDocument(id)).source).toBe(source);
+});
 
 test('Таблица сохраняет правки ячейки и структуры в заметке хранилища', { timeout: tabsTimeout }, async t => {
   // Arrange: открыть таблицу в приложении с отдельным хранилищем.

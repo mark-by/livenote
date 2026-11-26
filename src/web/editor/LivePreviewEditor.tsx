@@ -8,12 +8,16 @@ import { languages } from '@codemirror/language-data';
 import { classHighlighter } from '@lezer/highlight';
 import { vim, getCM } from '@replit/codemirror-vim';
 import { markdownDecorations } from './markdownDecorations';
+import { markdownBlockExtension } from './markdownBlockExtension';
+import { detailsRanges } from './detailsSource';
 import { diagramField, diagramRenderer, diagramSelection } from './diagramExtension';
 import { parseEditorDiagrams } from './parseDiagrams';
 import { parseEditorLinks } from './parseLinks';
 import { tableExtension, tableLinkHandler } from './tableExtension';
 import { stableViewport } from './stableViewport';
 import type { EditorVimMode, LivePreviewEditorProps } from './types';
+import { propertiesExtension, registerPropertiesSave } from './propertiesExtension';
+import { readProperties } from './frontmatterProperties';
 import './livePreview.css';
 
 const codeLanguageAliases = new Map([
@@ -39,7 +43,8 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
     vim: new Compartment(),
     diagrams: new Compartment(),
     theme: new Compartment(),
-    readOnly: new Compartment()
+    readOnly: new Compartment(),
+    properties: new Compartment(),
   }));
 
   useImperativeHandle(props.ref, () => ({
@@ -58,6 +63,12 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
       const selection = view.current?.state.selection.main;
       return { from: selection?.from ?? 0, to: selection?.to ?? 0 };
     },
+    selectRange(range) {
+      const editor = view.current;
+      if (!editor || editor.state.readOnly) return;
+      editor.focus();
+      editor.dispatch({ selection: { anchor: range.from, head: range.to }, scrollIntoView: true });
+    },
     replaceRange(range, text, options) {
       const editor = view.current;
       if (!editor) return;
@@ -74,11 +85,15 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
 
   useEffect(() => {
     if (!host.current) return;
+    const initial = current.current.documentProperties ? readProperties(current.current.source) : null;
     const editor = new EditorView({
       parent: host.current,
       state: EditorState.create({
         doc: current.current.source,
+        ...(initial?.kind === 'valid' ? { selection: { anchor: Math.min(initial.end + 1, initial.source.length) } } : {}),
         extensions: [
+          // Не отбрасываем CR: позиции редактора должны совпадать со смещениями в исходнике.
+          current.current.documentProperties ? EditorState.lineSeparator.of('\n') : [],
           compartments.vim.of([]),
           history(),
           drawSelection(),
@@ -87,6 +102,8 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
           markdown({ base: markdownLanguage, codeLanguages: codeLanguage }),
           syntaxHighlighting(classHighlighter),
           markdownDecorations,
+          compartments.properties.of(current.current.documentProperties ? propertiesExtension : []),
+          markdownBlockExtension,
           tableExtension,
           tableLinkHandler.of(target => current.current.onOpenLink?.(target)),
           diagramField,
@@ -124,7 +141,7 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
             ...markdownKeymap, ...defaultKeymap, ...historyKeymap
           ]),
           EditorView.updateListener.of(update => {
-            if (update.docChanged) current.current.onChange(update.state.doc.toString());
+            if (update.docChanged) current.current.onChange(update.state.sliceDoc());
             if (update.selectionSet || update.docChanged) {
               const { from, to } = update.state.selection.main;
               current.current.onSelectionChange?.({ from, to });
@@ -133,6 +150,7 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
         ]
       })
     });
+    registerPropertiesSave(editor, () => current.current.onSave?.());
     view.current = editor;
     return () => {
       editor.destroy();
@@ -143,18 +161,21 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
   useEffect(() => {
     const editor = view.current;
     if (!editor) return;
+    if (editor.state.sliceDoc() === props.source) return;
     const previous = editor.state.doc.toString();
-    if (previous === props.source) return;
+    const nextText = editor.state.toText(props.source);
+    const next = nextText.toString();
     let from = 0;
     let oldEnd = previous.length;
-    let newEnd = props.source.length;
-    while (from < oldEnd && from < newEnd && previous[from] === props.source[from]) from++;
-    while (oldEnd > from && newEnd > from && previous[oldEnd - 1] === props.source[newEnd - 1]) {
+    let newEnd = next.length;
+    while (from < oldEnd && from < newEnd && previous[from] === next[from]) from++;
+    while (oldEnd > from && newEnd > from && previous[oldEnd - 1] === next[newEnd - 1]) {
       oldEnd--; newEnd--;
     }
     editor.dispatch({
-      changes: { from, to: oldEnd, insert: props.source.slice(from, newEnd) },
-      annotations: Transaction.addToHistory.of(false)
+      changes: { from, to: oldEnd, insert: nextText.slice(from, newEnd) },
+      annotations: Transaction.addToHistory.of(false),
+      userEvent: 'sync.source',
     });
   }, [props.source]);
 
@@ -174,6 +195,12 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
       ])
     });
   }, [props.readOnly, compartments]);
+
+  useEffect(() => {
+    view.current?.dispatch({
+      effects: compartments.properties.reconfigure(props.documentProperties ? propertiesExtension : [])
+    });
+  }, [props.documentProperties, compartments]);
 
   useEffect(() => {
     view.current?.dispatch({
@@ -202,21 +229,28 @@ export function LivePreviewEditor(props: LivePreviewEditorProps) {
   }, [props.vimEnabled, compartments]);
 
   return (
-    <div className="live-preview-editor" data-theme={props.theme} onContextMenu={event => {
+    <div className="live-preview-editor" onContextMenu={event => {
       const editor = view.current;
       const callback = props.onContextMenu;
       if (!editor || !callback || event.defaultPrevented) return;
       const target = event.target;
-      if (target instanceof Element && target.closest('input, textarea, select')) return;
+      if (target instanceof Element && target.closest('input, textarea, select, .lp-properties')) return;
       const widget = target instanceof Element ? target.closest<HTMLElement>('.lp-diagram') : null;
+      const spoilerWidget = target instanceof Element ? target.closest<HTMLElement>('[data-spoiler-from]') : null;
+      const spoiler = spoilerWidget && detailsRanges(editor.state.doc)
+        .find(range => range.from === Number(spoilerWidget.dataset.spoilerFrom));
+      const spoilerSummary = spoiler && (
+        spoiler.summaryRange ?? { from: spoiler.bodyFrom, to: spoiler.bodyFrom }
+      );
       const position = widget ? Number(widget.dataset.from) :
-        editor.posAtCoords({ x: event.clientX, y: event.clientY }) ?? editor.state.doc.length;
+        editor.posAtCoords({ x: event.clientX, y: event.clientY }, false);
       const diagram = widget ? parseEditorDiagrams(editor.state.doc)
         .find(range => range.from === position && range.to === Number(widget.dataset.to)) : undefined;
       callback({
-        from: diagram?.from ?? position, to: diagram?.to ?? position,
+        from: diagram?.from ?? spoiler?.from ?? position, to: diagram?.to ?? spoiler?.to ?? position,
         clientX: event.clientX, clientY: event.clientY,
-        ...(diagram ? { diagram } : {})
+        ...(diagram ? { diagram } : {}),
+        ...(spoilerSummary ? { spoilerSummary } : {}),
       });
       event.preventDefault();
     }}>

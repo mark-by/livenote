@@ -18,11 +18,15 @@ let base;
 before(async () => {
   directory = await mkdtemp(join(tmpdir(), 'livenote-editor-test-'));
   await writeFile(join(directory, 'index.html'), '<html lang="ru"><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module" src="/fixture.tsx"></script></body></html>');
+  await writeFile(join(directory, 'fixture.css'), `
+@import ${JSON.stringify(join(project, 'src/web/heroui.css'))};
+@source ${JSON.stringify(join(project, 'src/web/editor'))};
+`);
   await writeFile(join(directory, 'fixture.tsx'), `
 import {useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {LivePreviewEditor} from ${JSON.stringify(join(project, 'src/web/editor/LivePreviewEditor.tsx'))};
-import ${JSON.stringify(join(project, 'src/web/heroui.css'))};
+import './fixture.css';
 function Diagram({diagram}) {
   const [edits,setEdits]=useState(0);
   return <button onClick={()=>setEdits(value=>value+1)}>Схема {diagram.format}: {edits}</button>;
@@ -82,6 +86,55 @@ async function fixture(t, source) {
   await expect(page.getByRole('textbox', { name: 'Текст заметки' })).toBeVisible();
   return page;
 }
+
+test('соседние спойлеры разделены компактным зазором без перехода к исходнику', { timeout }, async t => {
+  const page = await fixture(t, 'Вступление\n\n<details><summary>Первый</summary>\n\nТекст\n\n</details>\n\n<details><summary>Второй</summary>\n\nТекст\n\n</details>\n\nКонец');
+  const first = page.getByRole('button', { name: 'Первый', exact: true });
+  const second = page.getByRole('button', { name: 'Второй', exact: true });
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
+  const upper = await first.boundingBox();
+  const lower = await second.boundingBox();
+  const gap = lower.y - upper.y - upper.height;
+  for (const fraction of [0.2, 0.5, 0.8]) {
+    await page.mouse.click(lower.x + lower.width / 2, lower.y - gap * fraction);
+    await expect(first).toBeVisible();
+    await expect(second).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Текст заметки' })).not.toBeFocused();
+  }
+  expect(gap).toBeGreaterThan(0);
+  expect(gap).toBeLessThan(12);
+});
+
+test('наведение не затемняет свернутый спойлер', { timeout }, async t => {
+  const page = await fixture(t, 'Вступление\n\n<details><summary>Подробности</summary>\n\nТекст\n\n</details>');
+  const spoiler = page.getByRole('button', { name: 'Подробности', exact: true });
+  await expect(spoiler).toBeVisible();
+  const idleBackground = await spoiler.evaluate(element => getComputedStyle(element).backgroundColor);
+  await spoiler.hover();
+  await expect(spoiler).toHaveCSS('background-color', idleBackground);
+});
+
+test('дополнительные пустые строки между спойлерами остаются доступны для ввода', { timeout }, async t => {
+  const firstBlock = '<details><summary>Первый</summary>\n\nТекст\n\n</details>';
+  const secondBlock = '<details><summary>Второй</summary>\n\nТекст\n\n</details>';
+  const page = await fixture(t, `Начало\n\n${firstBlock}\n\n\n\n${secondBlock}\n\nКонец`);
+  const first = page.getByRole('button', { name: 'Первый', exact: true });
+  const second = page.getByRole('button', { name: 'Второй', exact: true });
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
+  const upper = await first.boundingBox();
+  const lower = await second.boundingBox();
+  const gap = lower.y - upper.y - upper.height;
+  expect(gap).toBeGreaterThan(48);
+  await page.mouse.click(lower.x + 12, lower.y - 12);
+  await page.keyboard.press('ArrowUp');
+  await expect(first).toBeVisible();
+  await expect(second).toBeVisible();
+  await page.keyboard.insertText('Новый абзац');
+  await expect.poll(() => page.locator('[data-source]').textContent()).toBe(
+    `Начало\n\n${firstBlock}\n\nНовый абзац\n\n${secondBlock}\n\nКонец`);
+});
 
 test('Markdown-таблица отображается как таблица, если курсор вне неё', { timeout }, async t => {
   const source = 'Вступление\n\n| Сценарий | Данные |\n| --- | --- |\n| Расчёт | `mid` |';

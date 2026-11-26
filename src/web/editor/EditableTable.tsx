@@ -1,7 +1,7 @@
-import { Children, isValidElement, memo, useCallback, useMemo, useRef, useState } from 'react';
-import type { FocusEvent, KeyboardEvent, ReactNode } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import type { FocusEvent, KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { Dropdown, Input, Label, Pagination, Table, TextArea } from '@heroui/react';
+import { Dropdown, Input, Label, Pagination, TextArea } from '@heroui/react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -10,26 +10,10 @@ import { changeTable, editTableCell } from './tableSource';
 import type { TableAction, TableCellAddress, TableSource } from './tableSource';
 import { tablePageMarkdown, tablePageSize } from './tablePreviewSource';
 import type { TablePreviewSource } from './tablePreviewSource';
-
-function headerChildren(children: ReactNode): ReactNode {
-  return Children.toArray(children).flatMap(child => {
-    if (!isValidElement<{ children?: ReactNode }>(child)) return [];
-    return Children.toArray(child.props.children);
-  });
-}
+import { markdownPreviewTable } from './markdownPreviewTable';
 
 const markdownComponents: Components = {
-  table: ({ children }) => <Table><Table.ScrollContainer>
-    <Table.Content aria-label="Таблица Markdown">{children}</Table.Content>
-  </Table.ScrollContainer></Table>,
-  thead: ({ children }) => <Table.Header>{headerChildren(children)}</Table.Header>,
-  tbody: ({ children }) => <Table.Body>{children}</Table.Body>,
-  tr: ({ children }) => <Table.Row>{children}</Table.Row>,
-  th: ({ children, align, node }) => <Table.Column
-    isRowHeader={node?.position?.start.offset === 0}
-    style={{ textAlign: align === 'char' ? undefined : align ?? undefined }}>{children}</Table.Column>,
-  td: ({ children, align }) => <Table.Cell
-    style={{ textAlign: align === 'char' ? undefined : align ?? undefined }}>{children}</Table.Cell>,
+  ...markdownPreviewTable,
   a: ({ href, children }) => <span role="link" className="lp-link" data-link={href || undefined}>{children}</span>
 };
 

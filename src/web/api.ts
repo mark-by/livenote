@@ -50,7 +50,8 @@ export function readVaultLocation(): VaultLocationScope {
 
 /** Возвращает same-origin URL новой вкладки для выбранного хранилища. */
 export function vaultLocationUrl(vaultId: string): string {
-  const url = new URL('/', window.location.origin);
+  const url = new URL(window.location.origin);
+  url.pathname = window.location.pathname;
   url.searchParams.set('vault_id', vaultId);
   return url.toString();
 }

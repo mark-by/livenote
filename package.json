@@ -14,7 +14,9 @@
     "desktop:web": "node scripts/prepare-drawio.mjs && vite build --mode desktop",
     "tauri": "tauri",
     "dev:web": "vite",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build"
   },
   "dependencies": {
     "@gravity-ui/icons": "^2.4.0",
@@ -36,6 +38,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@chromatic-com/storybook": "^5.6.0",
     "@codemirror/commands": "^6.8.1",
     "@codemirror/lang-markdown": "^6.3.2",
     "@codemirror/language": "^6.11.3",
@@ -45,6 +48,11 @@
     "@lezer/common": "^1.2.3",
     "@lezer/highlight": "^1.2.5",
     "@replit/codemirror-vim": "^6.3.0",
+    "@storybook/addon-a11y": "^10.6.9",
+    "@storybook/addon-docs": "^10.6.9",
+    "@storybook/addon-mcp": "^10.6.9",
+    "@storybook/addon-vitest": "^10.6.9",
+    "@storybook/react-vite": "^10.6.9",
     "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/cli": "2.12.5",
     "@types/better-sqlite3": "^7.6.13",
@@ -52,13 +60,24 @@
     "@types/node": "^24.7.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.0.4",
+    "@vitest/browser-playwright": "latest",
+    "@vitest/coverage-v8": "latest",
+    "msw": "^3.0.7",
+    "msw-storybook-addon": "^3.0.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "storybook": "^10.6.9",
     "tailwindcss": "^4.3.5",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
-    "vite": "^7.1.9"
+    "vite": "^7.1.9",
+    "vitest": "latest"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
   }
 }

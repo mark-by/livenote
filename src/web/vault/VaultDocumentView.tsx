@@ -1,13 +1,14 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Alert, Breadcrumbs, Button, Dropdown, Label, Spinner } from '@heroui/react';
-import { ArrowDownToSquare, ArrowsExpand, Copy, FilePlus, Pencil, Scissors, TrashBin } from '@gravity-ui/icons';
+import { ArrowDownToSquare, ArrowsExpand, Copy, FilePlus, Pencil, Plus, Scissors, TrashBin } from '@gravity-ui/icons';
 import type { DiagramFormat, VaultDocument } from '../../shared/types';
 import { downloadTextFile } from '../svgDownload';
 import { LivePreviewEditor } from '../editor/LivePreviewEditor';
+import { detailsRanges } from '../editor/detailsSource';
 import type { EditorContext, EditorVimMode, LivePreviewEditorHandle, SourceRange } from '../editor/LivePreviewEditor';
 import { DiagramPreview } from '../diagrams';
 import { useVaultDiagrams } from './useVaultDiagrams';
-import { fileName, formatForPath, parentPath, resolveDocumentLink } from './vaultPaths';
+import { fileName, formatForPath, insertBlockAt, parentPath, resolveDocumentLink } from './vaultPaths';
 import type { VaultWorkspace } from './useVaultWorkspace';
 
 interface DocumentViewProps {
@@ -24,12 +25,21 @@ interface DocumentViewProps {
 export function VaultDocumentView({ workspace, document, active, theme, vimEnabled, onVimModeChange, onRevealFolder, agentPanel }: DocumentViewProps): React.JSX.Element {
   const editorRef = useRef<LivePreviewEditorHandle>(null);
   const contextSource = useRef('');
+  const selectionAfterMenu = useRef<SourceRange | null>(null);
+  const menuRef = useCallback((element: HTMLElement | null) => {
+    if (element || !selectionAfterMenu.current) return;
+    const range = selectionAfterMenu.current;
+    selectionAfterMenu.current = null;
+    // Меню возвращает фокус при закрытии; выделяем текст после снятия оверлея.
+    requestAnimationFrame(() => editorRef.current?.selectRange(range));
+  }, []);
   const [context, setContext] = useState<EditorContext | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const pageId = document.path;
   const breadcrumbId = useId();
   const draft = workspace.drafts[pageId];
   const source = draft?.source ?? document.source;
+  const readOnly = draft?.modalOpen || workspace.agentLockedPaths?.has(pageId) || false;
   const diagrams = useVaultDiagrams(workspace, document, editorRef, agentPanel);
   const format = formatForPath(pageId);
   const folders = parentPath(pageId).split('/').filter(Boolean);
@@ -75,6 +85,21 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
   const menuAction = (action: string): void => {
     const range: SourceRange = context ? { from: context.from, to: context.to } : editorRef.current?.getSelection() ?? { from: source.length, to: source.length };
     setContext(null);
+    if (action === 'add-spoiler' || action === 'edit-spoiler') {
+      const editor = editorRef.current;
+      if (!editor || readOnly || workspace.isAgentLocked(pageId) || contextSource.current !== source) return;
+      if (action === 'edit-spoiler') {
+        selectionAfterMenu.current = context?.spoilerSummary ?? null;
+        return;
+      }
+      const template = '<details>\n<summary>Заголовок спойлера</summary>\n\nТекст спойлера\n\n</details>';
+      const insertion = insertBlockAt(source, range.to, template);
+      editor.replaceRange(insertion.edit, insertion.edit.text, { focus: false });
+      const summary = detailsRanges(template)[0]?.summaryRange;
+      selectionAfterMenu.current = summary
+        ? { from: insertion.from + summary.from, to: insertion.from + summary.to } : null;
+      return;
+    }
     if (action === 'mermaid' || action === 'bpmn' || action === 'drawio') diagrams.openCreate(action, { from: range.from, to: range.from });
     else if (action === 'existing') diagrams.chooseExisting({ from: range.from, to: range.from });
     else if (action === 'edit' && context?.diagram) diagrams.openEdit(context.diagram);
@@ -102,21 +127,24 @@ export function VaultDocumentView({ workspace, document, active, theme, vimEnabl
       <div className="vault-alert__actions"><Button size="sm" variant="outline" onPress={() => downloadTextFile(source, fileName(pageId), 'text/markdown')}>Скачать черновик</Button>
         <Button size="sm" variant="danger" onPress={() => workspace.discardDraft(pageId)}>Перечитать и отменить</Button></div>
     </Alert>}
-    {format === 'markdown' ? <LivePreviewEditor ref={editorRef} source={source} onChange={(next) => workspace.changeDraft(pageId, next)}
+    {format === 'markdown' ? <LivePreviewEditor ref={editorRef} source={source} documentProperties onChange={(next) => workspace.changeDraft(pageId, next)}
       renderDiagram={diagrams.renderDiagram} vimEnabled={vimEnabled} theme={theme} ariaLabel={`Документ ${document.page.title}`}
       onVimModeChange={onVimModeChange} onSave={() => void workspace.saveDraft(pageId)} onOpenLink={openLink}
       onContextMenu={(next) => { contextSource.current = source; setContext(next); }}
-      readOnly={draft?.modalOpen || workspace.agentLockedPaths?.has(pageId) || false} /> : <div className="vault-standalone-diagram">
+      readOnly={readOnly} /> : <div className="vault-standalone-diagram">
       <DiagramPreview value={{ format: format as DiagramFormat, source: document.source, title: document.page.title }}
         onExpand={() => diagrams.openView({ from: 0, to: source.length, format: format as DiagramFormat, source })}
         onEdit={() => diagrams.openEdit({ from: 0, to: source.length, format: format as DiagramFormat, source })} />
     </div>}
     <Dropdown isOpen={context !== null} onOpenChange={(open) => { if (!open) setContext(null); }}>
       <Dropdown.Trigger aria-label="Контекстное меню документа" className="vault-context-anchor" style={context ? { left: context.clientX, top: context.clientY } : undefined} />
-      <Dropdown.Popover><Dropdown.Menu aria-label="Действия документа" onAction={(key) => menuAction(key.toString())}>
+      <Dropdown.Popover><Dropdown.Menu ref={menuRef} aria-label="Действия документа" onAction={(key) => menuAction(key.toString())}
+        disabledKeys={readOnly ? ['add-spoiler', 'edit-spoiler'] : []}>
         {context?.diagram ? <><Dropdown.Item id="edit" textValue="Редактировать диаграмму"><Pencil aria-hidden="true" /><Label>Редактировать диаграмму</Label></Dropdown.Item>
           <Dropdown.Item id="view" textValue="Открыть диаграмму"><ArrowsExpand aria-hidden="true" /><Label>Открыть диаграмму</Label></Dropdown.Item>
           <Dropdown.Item id="remove" textValue="Удалить диаграмму" variant="danger"><TrashBin aria-hidden="true" /><Label>Удалить диаграмму</Label></Dropdown.Item></> : <InsertItems onAction={menuAction} />}
+        {!context?.diagram && <Dropdown.Item id="add-spoiler" textValue="Добавить спойлер"><Plus aria-hidden="true" /><Label>Добавить спойлер</Label></Dropdown.Item>}
+        {context?.spoilerSummary && <Dropdown.Item id="edit-spoiler" textValue="Редактировать спойлер"><Pencil aria-hidden="true" /><Label>Редактировать спойлер</Label></Dropdown.Item>}
         <Dropdown.Item id="copy" textValue="Копировать"><Copy aria-hidden="true" /><Label>Копировать</Label></Dropdown.Item>
         <Dropdown.Item id="cut" textValue="Вырезать"><Scissors aria-hidden="true" /><Label>Вырезать</Label></Dropdown.Item>
         <Dropdown.Item id="paste" textValue="Вставить"><ArrowDownToSquare aria-hidden="true" /><Label>Вставить</Label></Dropdown.Item>

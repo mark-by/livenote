@@ -42,7 +42,7 @@ export function prepareWikiLinks(source: string): string {
 
 export function MarkdownBlockView({ source, links = [], onOpenPage }: MarkdownBlockViewProps): React.JSX.Element {
   return (
-    <div className="markdown-body">
+    <div className="markdown-body markdown-body--native-tables">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={(url, key, node) => key === 'href' && node.tagName === 'a' && /^livenote:(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-Fa-f]{2})+$/.test(url)

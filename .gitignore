@@ -26,3 +26,11 @@ src/web/public/drawio.backup-*/
 .agents
 design/
 .metrics
+target/
+
+*storybook.log
+storybook-static
+
+# Отчёты о покрытии тестами
+/coverage/
+/src/web/coverage/

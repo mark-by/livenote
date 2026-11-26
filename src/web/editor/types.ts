@@ -16,6 +16,7 @@ export type EditorContext = SourceRange & {
   readonly clientX: number;
   readonly clientY: number;
   readonly diagram?: EditorDiagram;
+  readonly spoilerSummary?: SourceRange;
 };
 
 export type DiagramRenderer = (diagram: EditorDiagram) => ReactNode;
@@ -26,6 +27,7 @@ export type LivePreviewEditorHandle = {
   readonly revealPosition: (position: number) => void;
   readonly revealLine: (line: number) => void;
   readonly getSelection: () => SourceRange;
+  readonly selectRange: (range: SourceRange) => void;
   readonly replaceRange: (range: SourceRange, text: string, options?: { readonly focus?: boolean }) => void;
 };
 
@@ -42,5 +44,6 @@ export type LivePreviewEditorProps = {
   readonly onSelectionChange?: (range: SourceRange) => void;
   readonly onOpenLink?: (target: string) => void;
   readonly readOnly?: boolean;
+  readonly documentProperties?: boolean;
   readonly ref?: Ref<LivePreviewEditorHandle>;
 };

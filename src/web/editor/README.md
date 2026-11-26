@@ -21,7 +21,7 @@
 
 Диаграммы всегда заменяют свой исходный диапазон widget. `StateField` владеет block decorations, `atomicRanges` обслуживает обычную навигацию, transaction filter защищает endpoints при прямых перемещениях Vim. React root сохраняется при обновлении descriptor; `ResizeObserver` запрашивает измерение после асинхронного рендера viewer. Controls widget сохраняют своё управление.
 
-Оформлены заголовки, emphasis/strong, inline code, ссылки, списки и цитаты. Маркеры раскрываются для активного фрагмента. Таблицы и прочие специальные Markdown widgets не добавлены в этой foundation lane.
+Оформлены заголовки, emphasis/strong, inline code, ссылки, списки и цитаты. Маркеры раскрываются для активного фрагмента. Отдельные разделительные линии Markdown отображаются как HeroUI Separator. Разметка `<details>` с `<summary>` отображается как HeroUI Accordion; `<details open>` изначально раскрыт. Содержимое блока, в том числе GFM-таблицы, доступно для чтения в панели. В контекстном меню заметки пункт «Добавить спойлер» вставляет Markdown-шаблон, а в меню карточки пункт «Редактировать спойлер» выделяет заголовок в исходном тексте. Раскрытие не меняет Markdown.
 
 Layout: документ ограничен читаемой шириной; единственный scroll owner — `.cm-scroller`. Примитив content-limiter: https://github.com/changeroa/StyleGallery/blob/main/patterns/containment/content-limiter.md. Ширина caller host должна быть ограничена; flex/grid parent должен допускать `min-height: 0`.
 
