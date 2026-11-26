@@ -1,6 +1,6 @@
 {
   "name": "livenote",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Локальный визуальный блокнот для совместной работы с AI-агентом: страницы из Markdown- и Mermaid-блоков, MCP-инструменты, живое обновление через SSE",
   "type": "module",
   "license": "MIT",
